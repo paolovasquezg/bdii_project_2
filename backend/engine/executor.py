@@ -196,8 +196,7 @@ def _infer_fields_from_csv(path, index_column=None, index_method=None, sample_ro
         # PK si corresponde
         if index_column and str(index_column) == h:
             fdef["key"] = "primary"
-            if index_method:
-                fdef["index"] = index_method
+            fdef["index"] = (index_method or "heap")
 
         fields.append(fdef)
 
@@ -308,7 +307,7 @@ class Executor:
                 elif action == "create_table_from_file":
                     table = p["table"]
                     path = p["path"]
-                    idx_method = (p.get("index_method") or None)
+                    idx_method = (p.get("index_method") or "heap")
                     idx_column = p.get("index_column")
 
                     meta_path = table_meta_path(table)

@@ -12,7 +12,7 @@ def run_sql(sql: str) -> dict:
 run_sql("""drop table products""")
 
 path = "escribir path"
-run_sql(f"create table products from file '{path}' using index heap(product_id)")
+run_sql(f"create table products from file '{path}'")
 #run_sql("""
 #CREATE TABLE products (
 #  product_id INT PRIMARY KEY USING sequential,

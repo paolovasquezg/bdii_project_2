@@ -74,6 +74,10 @@ class Planner:
 
                     fields.append(f)
 
+                for f in fields:
+                    if f.get("key") == "primary" and not f.get("index"):
+                        f["index"] = "heap"
+
                 plans.append({"action": "create_table", "table": d["name"], "fields": fields})
 
             # ----------------- CREATE INDEX -----------------
@@ -93,8 +97,8 @@ class Planner:
                     "table": d["name"],
                     "path": d["path"],
                     "if_not_exists": d.get("if_not_exists", False),
-                    "index_method": _norm_method(d.get("index_method")),
-                    "index_column": d.get("index_column")
+                    "index_method": _norm_method(d.get("index_method") or "heap"),
+                    "index_column": d.get("index_column"),
                 })
 
             # ----------------- INSERT -----------------

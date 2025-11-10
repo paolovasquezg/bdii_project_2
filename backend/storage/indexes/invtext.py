@@ -1,4 +1,4 @@
-# backend/storage/indexes/invtext.py
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Tuple, Iterable, Optional, Set
@@ -7,9 +7,6 @@ import json, math, re, os, unicodedata, shutil
 # ------------------------------------------------------------
 # Tokenización + normalización + stopwords + stemming (ES)
 # ------------------------------------------------------------
-
-import unicodedata, os, re
-from typing import List, Set
 
 _TOK = re.compile(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+", re.UNICODE)
 
@@ -105,6 +102,39 @@ def _tokenize(text: str) -> List[str]:
         if norm:
             out.append(norm)
     return out
+
+# ------------------------------------------------------------
+# Concatenación de campos (string spec): "a,b|c+d" o "*"
+# ------------------------------------------------------------
+
+def _parse_field_spec(spec: str) -> List[str]:
+    """
+    Soporta:
+      - "titulo,descripcion,autor" (también con '|' o '+')
+      - "*" para concatenar todos los campos str del row
+    """
+    if not isinstance(spec, str) or not spec:
+        return []
+    s = spec.strip()
+    if s == "*":
+        return ["*"]
+    return [p.strip() for p in re.split(r"[,\|\+]+", s) if p.strip()]
+
+def _concat_fields(row: Dict, spec: str) -> str:
+    fields = _parse_field_spec(spec)
+    if not fields:
+        # compat: si es un nombre de campo simple
+        return str(row.get(spec, "") or "")
+    if fields == ["*"]:
+        return " ".join(str(v) for v in row.values() if isinstance(v, str) and v)
+    vals: List[str] = []
+    for f in fields:
+        v = row.get(f)
+        if isinstance(v, str) and v:
+            vals.append(v)
+        elif isinstance(v, (int, float)):
+            vals.append(str(v))
+    return " ".join(vals)
 
 # ------------------------------------------------------------
 # Índice Invertido con TF-IDF + Coseno + Streaming + SPIMI
@@ -248,9 +278,11 @@ class InvertedTextFile:
         records:
           - si main_index == 'heap': iterable de (row_dict, pos)
           - si no: iterable de row_dict
+        text_field:
+          - nombre de campo, o especificación "a,b|c+d"
+          - "*" para concatenar todos los campos str del row
         """
         self._build_bulk_spimi(records, text_field, pk_name, main_index)
-
 
     # ---- SPIMI (Single-Pass In-Memory Indexing por bloques) ----
     def _build_bulk_spimi(self, records: Iterable, text_field: str, pk_name: str, main_index: str):
@@ -265,7 +297,6 @@ class InvertedTextFile:
         docs_in_block = 0
 
         doc_map: Dict[int, Dict] = {}
-        doc_sumsq_global: Dict[int, float] = {}
         next_doc_id = 0
 
         # estructuras del bloque (términos como strings)
@@ -292,9 +323,12 @@ class InvertedTextFile:
                 row, pos = rec
             else:
                 row, pos = rec, None
-            if not isinstance(row, dict) or text_field not in row:
+            if not isinstance(row, dict):
                 continue
-            toks = _tokenize(row[text_field])
+
+            # *** CONCATENACIÓN DE CAMPOS ***
+            text = _concat_fields(row, text_field)
+            toks = _tokenize(text)
             if not toks:
                 continue
 
@@ -303,7 +337,7 @@ class InvertedTextFile:
             if main_index == "heap":
                 doc_map[doc_id] = {"pos": int(pos)}
             else:
-                doc_map[doc_id] = {"pk": row[pk_name]}
+                doc_map[doc_id] = {"pk": row.get(pk_name)}
 
             # cuenta por doc (en memoria solo para este doc)
             local: Dict[str, int] = {}
@@ -504,20 +538,28 @@ class InvertedTextFile:
         # dot products
         scores: Dict[int, float] = {}
 
-        # postings base
-        for tid, docs in self._iter_postings_for_terms(tids):
-            qw = float(qtf.get(tid, 0.0))
+        # --- Delta last-write-wins: acumula última versión por (tid, doc)
+        delta_acc: Dict[Tuple[int,int], float] = {}
+        for tid_d, doc_d, w_d in self._iter_delta_for_terms(tids):
+            delta_acc[(int(tid_d), int(doc_d))] = float(w_d)
+        delta_docs: Set[int] = {doc for (_tid, doc) in delta_acc.keys()}
+
+        # postings base (omitir docs que tienen delta para estos términos)
+        for tid_b, docs in self._iter_postings_for_terms(tids):
+            qw = float(qtf.get(tid_b, 0.0))
             if qw == 0.0:
                 continue
             for doc_id, dw in docs.items():
+                if doc_id in delta_docs:
+                    continue  # hay versión nueva en delta para algún término de la query
                 scores[doc_id] = scores.get(doc_id, 0.0) + (qw * float(dw))
 
-        # postings delta
-        for tid, doc, w in self._iter_delta_for_terms(tids):
-            qw = float(qtf.get(tid, 0.0))
+        # sumar delta (último gana)
+        for (tid_d, doc_d), w_d in delta_acc.items():
+            qw = float(qtf.get(tid_d, 0.0))
             if qw == 0.0:
                 continue
-            scores[int(doc)] = scores.get(int(doc), 0.0) + (qw * float(w))
+            scores[int(doc_d)] = scores.get(int(doc_d), 0.0) + (qw * float(w_d))
 
         if not scores:
             return []

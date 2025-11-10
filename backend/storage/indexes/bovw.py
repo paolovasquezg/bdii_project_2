@@ -237,10 +237,10 @@ class BoVWFile:
         np.save(self._pks_f, np.array(pk_list, dtype=np.int64));
         self.write_count += 1
         # 6) persist
-        np.save(self._idf_f, idf);
+        np.save(self._idf_f, idf)
         self.write_count += 1
         with open(self._post_f, "w", encoding="utf-8") as f:
-            json.dump(postings, f);
+            json.dump(postings, f)
             self.write_count += 1
         with open(self._map_f, "w", encoding="utf-8") as f:
             json.dump({int(pk): {"image_path": str(p)} for pk, p in pairs}, f);

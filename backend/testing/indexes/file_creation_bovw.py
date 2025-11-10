@@ -23,7 +23,6 @@ ROOT = (HERE / ".." / "..").resolve()
 RUNTIME_DIR = (ROOT / "runtime" / "files").resolve()   # <<— destino “del sistema”, no tmp
 IMG_DIR = (HERE / "_testdata" / "imgs").resolve()
 
-
 def ensure_imgs(dirpath: Path):
     """Genera 4 imágenes sintéticas y las guarda en testing/_testdata/imgs (no tmp)."""
     from PIL import Image, ImageDraw

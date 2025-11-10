@@ -5,7 +5,7 @@ from backend.storage.indexes.isam import IsamFile
 from backend.storage.indexes.rtree import RTree
 from backend.storage.indexes.hash import ExtendibleHashingFile
 from backend.storage.indexes.bplus import BPlusFile
-from backend.storage.indexes.invtext import InvTextFile
+from backend.storage.indexes.invtext import InvertedTextFile
 
 import json as _json
 import struct
@@ -42,6 +42,7 @@ class File:
         self._index_usage = []
         self._cached_rtree = {}  # {field_name: RTree_wrapper}
         self._cached_bovw = {}  # {field_name: BoVWFile}
+        self._invtext_cache = {}
 
     # ------------------------------ IO accounting ------------------------------------ #
 
@@ -54,6 +55,8 @@ class File:
             "bplus": dict(zero),
             "hash": dict(zero),
             "rtree": dict(zero),
+            "bovw": dict(zero),
+            "invtext": dict(zero),
             "total": dict(zero),
         }
 
@@ -164,6 +167,31 @@ class File:
                 pass
         self._cached_bovw.clear()
 
+    def _close_cached_invtext(self):
+        for inv in self._invtext_cache.values():
+            try:
+                inv.close()
+            except Exception:
+                pass
+        self._invtext_cache.clear()
+
+    def _make_invtext(self, field: str, reuse_cached: bool = True):
+        meta = self.indexes.get(field, {})
+        base_dir = meta.get("filename")
+
+        inv = InvertedTextFile(base_dir, key=field, heap_file=self.indexes["primary"]["filename"])
+        inv._ensure_loaded()
+
+        # sanity: si no hay archivos, no pierdas tiempo con knn
+        must_exist = ["vocab.json", "idf.json", "postings.jsonl", "doc_map.json"]
+        missing = [p for p in must_exist if not os.path.exists(os.path.join(base_dir, p))]
+        if missing:
+            if DEBUG_IDX:
+                print(f"[InvText] índice vacío en {base_dir}; faltan: {missing}")
+            return inv  # lo devolvemos igual, pero sabiendo que knn dará []
+
+        return inv
+
     def _close_cached_rtrees(self):
         """Cierra todos los RTree cacheados (persist header)."""
         for rt in self._cached_rtree.values():
@@ -268,7 +296,8 @@ class File:
         if not meta:
             return None
         kind = (meta.get("index") or "").lower()
-        return kind if kind in ("hash", "bplus", "rtree") else None
+        return kind if kind in ("hash", "bplus", "rtree", "invtext") else None
+
 
     # ----------------------------------- DDL build ----------------------------------- #
 
@@ -347,6 +376,24 @@ class File:
                     self.index_log("secondary", "rtree", index, "build")
                 except Exception as e:
                     if DEBUG_IDX: print("[RTREE build secondary] skip:", e)
+
+            elif kind == "invtext":
+                try:
+                    inv = self._make_invtext(index, reuse_cached=True)
+                    is_heap = (self.indexes["primary"]["index"] == "heap")
+                    for rec in records:
+                        if index not in rec:
+                            continue
+                        doc_id = (rec.get("pos") if is_heap else rec[self.primary_key])
+                        inv.index_doc(doc_id, str(rec[index]) if rec[index] is not None else "")
+                    # opcional: inv.flush() si tu implementación lo expone
+                    try:
+                        self.io_merge(inv, "invtext")
+                    except:
+                        pass
+                    self.index_log("secondary", "invtext", index, "build")
+                except Exception as e:
+                    if DEBUG_IDX: print("[INVTEXT build secondary] skip:", e)
 
         self.last_io = self.io_get()
         return []
@@ -507,6 +554,28 @@ class File:
                     if DEBUG_IDX: print(f"[RTREE insert secondary] after batch: records={len(records)}")
                     self.io_merge(rt, "rtree")
                     self.index_log("secondary", "rtree", index, "insert")
+
+                elif kind == "invtext":
+                    try:
+                        inv = self._make_invtext(index, reuse_cached=True)
+                        if is_heap:
+                            for row_dict, pos in records:
+                                if index not in row_dict:
+                                    continue
+                                inv.index_doc(pos, str(row_dict[index]) if row_dict[index] is not None else "")
+                        else:
+                            for row_dict in records:
+                                if index not in row_dict:
+                                    continue
+                                inv.index_doc(row_dict[self.primary_key],
+                                              str(row_dict[index]) if row_dict[index] is not None else "")
+                        try:
+                            self.io_merge(inv, "invtext")
+                        except:
+                            pass
+                        self.index_log("secondary", "invtext", index, "insert")
+                    except Exception as e:
+                        if DEBUG_IDX: print("[INVTEXT insert secondary] skip:", e)
 
         self.last_io = self.io_get()
         return records
@@ -807,6 +876,67 @@ class File:
                 if DEBUG_IDX: print("[BOVW knn] skip:", e)
                 self.last_io = self.io_get()
                 return []
+        elif "invtext" in kind:
+            try:
+                q = params.get("query_text")
+                k = int(params.get("k") or 8)
+                if not q:
+                    self.last_io = self.io_get()
+                    return []
+
+                inv = self._make_invtext(field, reuse_cached=True)
+                doc_ids = inv.knn(q, k) or []
+
+                # asegúrate de tener doc_map cargado
+                try:
+                    inv._ensure_loaded()
+                except:
+                    pass
+                doc_map = getattr(inv, "doc_map", {}) or {}
+
+                prim = self.indexes.get("primary", {})
+                data_filename = prim.get("filename")
+
+                rows = []
+
+                # 1) Resolver por PK si el doc_map lo tiene
+                for did in doc_ids:
+                    di = int(did) if isinstance(did, (int, str)) and str(did).isdigit() else did
+                    meta = doc_map.get(di)
+                    if not meta:
+                        continue
+                    if "pk" in meta:
+                        pkval = meta["pk"]
+                        rrs = self.search({"op": "search", "field": self.primary_key, "value": pkval}) or []
+                        if rrs:
+                            r0 = rrs[0][0] if isinstance(rrs[0], tuple) else rrs[0]
+                            if isinstance(r0, dict): rows.append(r0)
+
+                # 2) Para los que quedaron, intenta por POS si existe
+                if len(rows) < len(doc_ids) and data_filename:
+                    pos_list = []
+                    for did in doc_ids:
+                        di = int(did) if isinstance(did, (int, str)) and str(did).isdigit() else did
+                        meta = doc_map.get(di)
+                        if meta and "pos" in meta:
+                            pos_list.append({"pos": int(meta["pos"])})
+                    if pos_list:
+                        hf = HeapFile(data_filename)
+                        alt = hf.search_by_pos(pos_list) or []
+                        if alt: rows.extend(alt)
+                        self.io_merge(hf, "heap")
+
+                try:
+                    self.io_merge(inv, "invtext")
+                except:
+                    pass
+                self.index_log("secondary", "invtext", field, "knn")
+                self.last_io = self.io_get()
+                return rows
+            except Exception as e:
+                if DEBUG_IDX: print("[INVTEXT knn] skip:", e)
+                self.last_io = self.io_get()
+                return []
 
         # fallback: no soportado
         self.last_io = self.io_get()
@@ -921,6 +1051,35 @@ class File:
                 except Exception as e:
                     if DEBUG_IDX: print("[RTREE remove secondary] skip:", e)
 
+            elif kind == "invtext":
+                try:
+                    inv = self._make_invtext(index, reuse_cached=True)
+                    for rec in (records or []):
+                        if isinstance(rec, tuple) and len(rec) >= 2:
+                            row, pos = rec[0], rec[1]
+                            if index in row:
+                                try:
+                                    inv.remove_doc(
+                                        pos if (self.indexes["primary"]["index"] == "heap") else row[self.primary_key],
+                                        str(row[index]) if row[index] is not None else "")
+                                except Exception:
+                                    pass
+                        elif isinstance(rec, dict) and index in rec:
+                            doc_id = (rec.get("pos") if self.indexes["primary"]["index"] == "heap" else rec.get(
+                                self.primary_key))
+                            if doc_id is not None:
+                                try:
+                                    inv.remove_doc(doc_id, str(rec[index]) if rec[index] is not None else "")
+                                except Exception:
+                                    pass
+                    try:
+                        self.io_merge(inv, "invtext")
+                    except:
+                        pass
+                    self.index_log("secondary", "invtext", index, "cleanup_after_remove")
+                except Exception as e:
+                    if DEBUG_IDX: print("[INVTEXT remove secondary] skip:", e)
+
         self.last_io = self.io_get()
         return records
     
@@ -1028,6 +1187,7 @@ class File:
                 self.insert({"record": rec})
             # Close all cached rtrees to persist headers
             self._close_cached_rtrees()
+            self._close_cached_invtext()
             if DEBUG_IDX: print(f"[import_csv] closed cached rtrees after {len(all_recs)} records")
             self.last_io = self.io_get()
             return {"count": len(all_recs)}

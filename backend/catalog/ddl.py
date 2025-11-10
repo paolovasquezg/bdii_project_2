@@ -140,10 +140,40 @@ def backfill_secondary(table: str, column: str, relation: dict, indexes: dict):
                     if p and os.path.exists(p):
                         valid.append(r)
 
-        if not valid:
-            return  # dejar índice vacío pero consistente
+    elif sec_kind == "invtext":
+        from backend.storage.indexes.invtext import InvertedTextFile
+        pk_name = _find_pk_name(relation)
+        if not pk_name:
+            return
+        main = indexes["primary"]["filename"]
+        prim_kind = indexes["primary"]["index"]
 
-        bv.build_bulk(valid, image_field=column, pk_name=pk_name, main_index=prim_kind)
+        records = get_physical_records(main, prim_kind, True)
+
+        if prim_kind == "heap":
+            valid = []
+            for pair in records:
+                if not isinstance(pair, tuple) or len(pair) != 2:
+                    continue
+                row, pos = pair
+                if isinstance(row, dict) and pk_name in row and column in row:
+                    if row[column] is not None and str(row[column]).strip() != "":
+                        valid.append((row, pos))
+        else:
+            valid = []
+            for r in records:
+                if isinstance(r, dict) and pk_name in r and column in r:
+                    if r[column] is not None and str(r[column]).strip() != "":
+                        valid.append(r)
+
+        if not valid:
+            return
+
+        base_dir = sec_file
+        it = InvertedTextFile(base_dir, key=column,
+                              heap_file=(main if prim_kind == "heap" else None))
+        # build
+        it.build_bulk(valid, text_field=column, pk_name=pk_name, main_index=prim_kind)
 
 def _canon_index_kind(method: str) -> str:
     m = (method or "").strip().lower().replace(" ", "")
@@ -159,9 +189,10 @@ def _canon_index_kind(method: str) -> str:
         return "hash"
     if m in ("heap",):
         return "heap"
-    # fallback sin romper
     if m in ("bovw","bow","visual","ivf","img","image"):
         return "bovw"
+    if m in ("invtext"):
+        return "invtext"
     return m or "heap"
 
 def _filename_token(method: str) -> str:
@@ -464,6 +495,78 @@ def create_index(table: str, column: str, method: str):
                 F = File(table)
                 if hasattr(F, "_close_cached_rtrees"): F._close_cached_rtrees()
                 if hasattr(F, "_close_cached_bovw"):   F._close_cached_bovw()
+            except Exception:
+                pass
+        return
+
+    if kind == "invtext":
+        from backend.storage.indexes.invtext import InvertedTextFile
+        pk_name = _find_pk_name(relation)
+        if not pk_name:
+            raise ValueError(f"No se pudo determinar PK para la tabla {table}")
+
+        mainfilename = indexes["primary"]["filename"]
+        prim_kind    = indexes["primary"]["index"]
+
+        records = get_physical_records(mainfilename, prim_kind, True)
+
+        if prim_kind == "heap":
+            valid = []
+            for pair in records:
+                if not isinstance(pair, tuple) or len(pair) != 2:
+                    continue
+                row, pos = pair
+                if not isinstance(row, dict): continue
+                if pk_name not in row or column not in row: continue
+                if row[column] is None or str(row[column]).strip() == "": continue
+                valid.append((row, pos))
+        else:
+            valid = []
+            for r in records:
+                if not isinstance(r, dict): continue
+                if pk_name not in r or column not in r: continue
+                if r[column] is None or str(r[column]).strip() == "": continue
+                valid.append(r)
+
+        if not valid:
+            raise ValueError("No hay textos válidos para construir el índice invtext.")
+
+        base_dir = DATA_DIR / table / f"{table}-invtext-{column}"
+        tmp_dir  = DATA_DIR / table / f".tmp-{table}-invtext-{column}"
+        os.makedirs(tmp_dir, exist_ok=True)
+
+        try:
+            it = InvertedTextFile(str(tmp_dir), key=column,
+                                  heap_file=(mainfilename if prim_kind == "heap" else None))
+            it.build_bulk(valid, text_field=column, pk_name=pk_name, main_index=prim_kind)
+
+            dm = os.path.join(str(tmp_dir), "doc_map.json")
+            if not os.path.exists(dm):
+                raise RuntimeError("invtext build no generó doc_map.json")
+            with open(dm, "r", encoding="utf-8") as f:
+                doc_map = json.load(f)
+            if not isinstance(doc_map, dict) or not doc_map:
+                raise RuntimeError("invtext doc_map.json vacío (0 documentos indexados)")
+
+            if os.path.exists(base_dir):
+                shutil.rmtree(base_dir, ignore_errors=True)
+            shutil.move(str(tmp_dir), str(base_dir))
+
+            indexes[column] = {"index": "invtext", "filename": str(base_dir)}
+            put_json(str(meta), [relation, indexes])
+
+        except Exception as e:
+            try:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            finally:
+                raise RuntimeError(
+                    f"Fallo construyendo invtext({table}.{column}); "
+                    f"primario={prim_kind}; detalle={type(e).__name__}: {e}"
+                )
+        finally:
+            try:
+                F = File(table)
+                if hasattr(F, "_close_cached_rtrees"): F._close_cached_rtrees()
             except Exception:
                 pass
         return

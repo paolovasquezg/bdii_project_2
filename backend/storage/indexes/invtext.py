@@ -1,168 +1,181 @@
 # backend/storage/indexes/invtext.py
-# -*- coding: utf-8 -*-
-import json, math, os, re, unicodedata, heapq
-from collections import defaultdict, Counter
+from __future__ import annotations
 from pathlib import Path
-from typing import Iterable, Tuple, List, Dict
+from typing import Dict, List, Tuple, Iterable, Optional
+import json, math, re, os
 
-_SP_STOP = {
-    "a","al","algo","algunas","algunos","ante","antes","como","con","contra","cual",
-    "cuando","de","del","desde","donde","dos","el","ella","ellas","ellos","en","entre",
-    "era","erais","eran","eras","eres","es","esa","esas","ese","eso","esos","esta",
-    "estaba","estaban","estado","estados","estamos","estar","estas","este","esto",
-    "estos","fue","fueron","ha","habeis","habia","habian","han","has","hasta","hay",
-    "la","las","le","les","lo","los","mas","me","mi","mis","mucho","muy","no","nos",
-    "nosotros","o","os","otra","otras","otro","otros","para","pero","poco","por","porque",
-    "que","se","sea","sean","segun","ser","si","sin","sobre","sois","somos","son","soy",
-    "su","sus","tambien","tanto","te","tenemos","tiene","tienen","toda","todas","todo",
-    "todos","tu","tus","un","una","uno","vosotros","y","ya"
-}
-
-_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
-
-def _norm_txt(s: str) -> str:
-    s = s.lower()
-    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
-    return s
+_TOK = re.compile(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+", re.UNICODE)
 
 def _tokenize(text: str) -> List[str]:
-    text = _norm_txt(text or "")
-    toks = _TOKEN_RE.findall(text)
-    return [t for t in toks if t not in _SP_STOP and len(t) > 1]
+    if not isinstance(text, str):
+        return []
+    return [t.lower() for t in _TOK.findall(text)]
 
-class InvTextFile:
+class InvertedTextFile:
     """
-    Índice invertido en disco para texto (TF-IDF + coseno).
-    Artefactos:
-      - vocab.json      : {"term": {"df": int, "i": idx_en_arrays}, ...}
-      - postings.jsonl  : una línea por término => {"t": "term", "p": [[doc, w], ...]}
-      - doc_map.json    : {"N": num_docs, "ids": [pk_doc0, pk_doc1, ...]}
-      - norms.json      : [||d0||, ||d1||, ...]
-      - meta.json       : {"field": "...", "version": 1}
+    Índice invertido simple con TF-IDF + coseno.
+    Estructura en disco (directorio base):
+      - vocab.json       : {term -> term_id}
+      - idf.json         : {term_id -> idf}
+      - postings.jsonl   : JSONL de {"tid": int, "docs": {doc_id: tf}}
+      - doc_map.json     : {doc_id: {"pk": <val>} ó {"pos": <int>}}
     """
-    def __init__(self, base_dir: str, field: str):
-        self.base = Path(base_dir); self.base.mkdir(parents=True, exist_ok=True)
-        self.field = field
-        self.vocab_path   = self.base/"vocab.json"
-        self.postings_jl  = self.base/"postings.jsonl"
-        self.docmap_path  = self.base/"doc_map.json"
-        self.norms_path   = self.base/"norms.json"
-        self.meta_path    = self.base/"meta.json"
+    def __init__(self, base_dir: str, key: str, heap_file: Optional[str] = None):
+        self.base = Path(base_dir)
+        self.key = key
+        self.heap_file = heap_file
+        self.vocab: Dict[str, int] = {}
+        self.idf: Dict[int, float] = {}
+        self.doc_map: Dict[int, Dict] = {}
+        # postings en memoria perezoso (cargamos on-demand)
+        self._postings_path = self.base / "postings.jsonl"
+        self._postings_cache: Optional[Dict[int, Dict[int, float]]] = None
 
-    # ---------- BUILD (SPIMI simplificado con merge único) ----------
-    def build_from_docs(self, docs: Iterable[Tuple[int, str]]):
+    # ------------- helpers de E/S -------------
+    def _save_json(self, p: Path, obj):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False)
+
+    def _load_json(self, p: Path, default):
+        if not p.exists(): return default
+        with p.open("r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _load_all(self):
+        self.vocab = self._load_json(self.base/"vocab.json", {})
+        self.idf   = {int(k): v for k, v in self._load_json(self.base/"idf.json", {}).items()}
+        self.doc_map = {int(k): v for k, v in self._load_json(self.base/"doc_map.json", {}).items()}
+        self._postings_cache = None  # lazily
+
+    def _save_all(self):
+        self._save_json(self.base/"vocab.json", self.vocab)
+        self._save_json(self.base/"idf.json", {str(k): v for k, v in self.idf.items()})
+        self._save_json(self.base/"doc_map.json", {str(k): v for k, v in self.doc_map.items()})
+
+    def _ensure_loaded(self):
+        if not self.vocab or not self.idf or not self.doc_map:
+            self._load_all()
+
+    def _load_postings(self) -> Dict[int, Dict[int, float]]:
+        if self._postings_cache is not None:
+            return self._postings_cache
+        postings: Dict[int, Dict[int, float]] = {}
+        if self._postings_path.exists():
+            with self._postings_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip(): continue
+                    row = json.loads(line)
+                    tid = int(row["tid"])
+                    postings[tid] = {int(k): float(v) for k, v in row["docs"].items()}
+        self._postings_cache = postings
+        return postings
+
+    def _save_postings(self, postings: Dict[int, Dict[int, float]]):
+        self._postings_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._postings_path.open("w", encoding="utf-8") as f:
+            for tid, docs in postings.items():
+                f.write(json.dumps({"tid": tid, "docs": {str(k): v for k, v in docs.items()}}, ensure_ascii=False) + "\n")
+
+    # ------------- build -------------
+    def build_bulk(self, records: Iterable, text_field: str, pk_name: str, main_index: str):
         """
-        docs: iterable de (pk, text_concatenado)
-        Hace un pase por memoria (TF) y escribe postings ordenados por término.
+        records:
+          - si main_index == 'heap': iterable de (row_dict, pos)
+          - si no: iterable de row_dict
         """
-        # 1) recolecta TF por doc y DF por palabra
-        per_doc_terms: List[Dict[str, float]] = []
-        doc_ids: List[int] = []
-        df: Counter = Counter()
-        for pk, text in docs:
-            toks = _tokenize(text)
-            if not toks:
-                per_doc_terms.append({})
-                doc_ids.append(pk)
-                continue
-            tf = Counter(toks)
-            # normalizamos TF log(1+tf)
-            tfw = {t: 1.0 + math.log(v) for t, v in tf.items()}
-            per_doc_terms.append(tfw)
-            doc_ids.append(pk)
-            df.update(tfw.keys())
-        N = len(per_doc_terms)
-        # 2) IDF
-        idf: Dict[str, float] = {t: math.log((N + 1) / (df[t] + 1)) + 1.0 for t in df.keys()}
-        # 3) TF-IDF por doc + normas
-        doc_norms: List[float] = [0.0]*N
-        inv: Dict[str, List[Tuple[int, float]]] = defaultdict(list)  # t -> [(doc_idx, w)]
-        for i, tfw in enumerate(per_doc_terms):
-            acc2 = 0.0
-            for t, tfw_i in tfw.items():
-                w = tfw_i * idf[t]
-                inv[t].append((i, w))
-                acc2 += w*w
-            doc_norms[i] = math.sqrt(acc2) if acc2 > 0 else 1.0
+        vocab: Dict[str, int] = {}
+        df: Dict[int, int] = {}
+        tf: Dict[int, Dict[int, float]] = {}  # doc_id -> {tid: tf}
+        doc_map: Dict[int, Dict] = {}
 
-        # 4) persistencia: vocab, postings.jsonl, doc_map, norms, meta
-        vocab = {}
-        for idx, t in enumerate(sorted(inv.keys())):
-            vocab[t] = {"df": len(inv[t]), "i": idx}
-        with self.vocab_path.open("w", encoding="utf-8") as f:
-            json.dump(vocab, f, ensure_ascii=False)
+        def add_term(term: str) -> int:
+            if term not in vocab:
+                vocab[term] = len(vocab)
+            return vocab[term]
 
-        with self.postings_jl.open("w", encoding="utf-8") as f:
-            for t in sorted(inv.keys()):
-                f.write(json.dumps({"t": t, "p": inv[t]}, ensure_ascii=False) + "\n")
-
-        with self.docmap_path.open("w", encoding="utf-8") as f:
-            json.dump({"N": N, "ids": doc_ids}, f, ensure_ascii=False)
-
-        with self.norms_path.open("w", encoding="utf-8") as f:
-            json.dump(doc_norms, f)
-
-        with self.meta_path.open("w", encoding="utf-8") as f:
-            json.dump({"field": self.field, "version": 1}, f)
-
-    # ---------- QUERY ----------
-    def _load_vocab(self):
-        if not self.vocab_path.exists():
-            return {}
-        return json.loads(self.vocab_path.read_text(encoding="utf-8"))
-
-    def _iter_postings(self, need_terms: List[str]):
-        need = set(need_terms)
-        with self.postings_jl.open("r", encoding="utf-8") as f:
-            for line in f:
-                obj = json.loads(line)
-                if obj["t"] in need:
-                    yield obj["t"], obj["p"]
-
-    def _load_docmap_norms(self):
-        dm = json.loads(self.docmap_path.read_text(encoding="utf-8"))
-        norms = json.loads(self.norms_path.read_text(encoding="utf-8"))
-        return dm["ids"], norms
-
-    def knn(self, query: str, k: int = 10) -> List[Tuple[int, float]]:
-        """
-        Retorna lista [(pk, score)] ordenada desc por score, top-k por coseno.
-        Sin cargar el índice completo: lee sólo postings de términos de la consulta.
-        """
-        vocab = self._load_vocab()
-        if not vocab:
-            return []
-        q_toks = _tokenize(query)
-        if not q_toks:
-            return []
-        # TF-IDF de la consulta
-        tfq = Counter(q_toks)
-        tfq_w = {t: 1.0 + math.log(v) for t, v in tfq.items() if t in vocab}
-        if not tfq_w:
-            return []
-        # IDF desde vocab (aprox: df -> idf)
-        N = json.loads(self.docmap_path.read_text(encoding="utf-8"))["N"]
-        idf = {t: math.log((N + 1) / (vocab[t]["df"] + 1)) + 1.0 for t in tfq_w.keys()}
-        qvec = {t: tfq_w[t] * idf[t] for t in tfq_w.keys()}
-        qnorm = math.sqrt(sum(w*w for w in qvec.values())) or 1.0
-
-        # Acumula producto punto usando sólo postings de términos de la consulta
-        acc: Dict[int, float] = defaultdict(float)
-        for t, postings in self._iter_postings(list(qvec.keys())):
-            qw = qvec[t]
-            for doc_i, w in postings:
-                acc[doc_i] += qw * w
-
-        doc_ids, norms = self._load_docmap_norms()
-        # Top-k con min-heap
-        heap: List[Tuple[float, int]] = []  # (score, pk)
-        for doc_i, dot in acc.items():
-            score = dot / (qnorm * (norms[doc_i] or 1.0))
-            pk = doc_ids[doc_i]
-            if len(heap) < k:
-                heapq.heappush(heap, (score, pk))
+        N = 0
+        for rec in records:
+            if main_index == "heap":
+                row, pos = rec
             else:
-                if score > heap[0][0]:
-                    heapq.heapreplace(heap, (score, pk))
-        heap.sort(reverse=True)
-        return [(pk, sc) for sc, pk in heap]
+                row, pos = rec, None
+            if not isinstance(row, dict) or text_field not in row:
+                continue
+            text = row[text_field]
+            tokens = _tokenize(text)
+            if not tokens:
+                continue
+            N += 1
+            doc_id = N - 1
+            # doc map
+            if main_index == "heap":
+                doc_map[doc_id] = {"pos": int(pos)}
+            else:
+                doc_map[doc_id] = {"pk": row[pk_name]}
+            # tf por doc
+            tcount: Dict[int, float] = {}
+            for t in tokens:
+                tid = add_term(t)
+                tcount[tid] = tcount.get(tid, 0.0) + 1.0
+            # normaliza TF
+            norm = math.sqrt(sum(v*v for v in tcount.values())) or 1.0
+            for tid in list(tcount.keys()):
+                tcount[tid] /= norm
+            tf[doc_id] = tcount
+
+        # IDF
+        for doc_id, vec in tf.items():
+            for tid in vec.keys():
+                df[tid] = df.get(tid, 0) + 1
+        idf: Dict[int, float] = {}
+        for tid, dfi in df.items():
+            idf[tid] = math.log((N + 1) / (dfi + 1)) + 1.0  # suavizado
+
+        # aplicar IDF a TF para obtener TF-IDF
+        postings: Dict[int, Dict[int, float]] = {}
+        for doc_id, vec in tf.items():
+            for tid, tfv in vec.items():
+                w = tfv * idf[tid]
+                postings.setdefault(tid, {})[doc_id] = w
+
+        # guardar
+        self.vocab = vocab
+        self.idf = idf
+        self.doc_map = doc_map
+        self._save_all()
+        self._save_postings(postings)
+
+    # ------------- consulta -------------
+    def knn(self, query_text: str, k: int) -> List[int]:
+        """
+        Retorna lista de doc_ids (ordenados por similitud desc).
+        """
+        self._ensure_loaded()
+        postings = self._load_postings()
+        toks = _tokenize(query_text)
+        if not toks: return []
+        # TF normalizado de query
+        qtf: Dict[int, float] = {}
+        for t in toks:
+            tid = self.vocab.get(t)
+            if tid is None:
+                continue
+            qtf[tid] = qtf.get(tid, 0.0) + 1.0
+        if not qtf: return []
+        qnorm = math.sqrt(sum(v*v for v in qtf.values())) or 1.0
+        for tid in list(qtf.keys()):
+            qtf[tid] /= qnorm
+        # TF-IDF query
+        for tid in list(qtf.keys()):
+            qtf[tid] *= self.idf.get(tid, 0.0)
+
+        # coseno: acumular producto punto
+        score: Dict[int, float] = {}
+        for tid, qw in qtf.items():
+            docs = postings.get(tid, {})
+            for doc_id, dw in docs.items():
+                score[doc_id] = score.get(doc_id, 0.0) + (qw * dw)
+
+        top = sorted(score.items(), key=lambda x: x[1], reverse=True)[:k]
+        return [doc_id for doc_id, _ in top]

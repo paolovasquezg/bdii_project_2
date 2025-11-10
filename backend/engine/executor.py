@@ -23,9 +23,10 @@ def ZERO_IO():
         "bplus": dict(z),
         "hash": dict(z),
         "rtree": dict(z),
+        "bovw": dict(z),       # 🔹 nuevo
+        "invtext": dict(z),    # 🔹 nuevo
         "total": dict(z),
     }
-
 # -------- helpers de (de)serialización segura del plan -------- #
 _PRIMITIVES = (str, int, float, bool, type(None))
 

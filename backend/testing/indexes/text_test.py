@@ -1,4 +1,4 @@
-# test_invtext_knn.py
+# backend/testing/indexes/test_invtext_pk_variants.py
 import json
 import sys
 from typing import Any, Dict, Iterable, List, Union
@@ -11,7 +11,9 @@ ENGINE = Engine()
 
 def run_sql(sql: str) -> Dict[str, Any]:
     env = ENGINE.run(sql)
-    print("\nSQL >>>", sql.strip().splitlines()[0])
+    # imprime solo la primera línea para ubicar el bloque
+    first = sql.strip().splitlines()[0] if sql.strip() else sql
+    print("\nSQL >>>", first)
     print(json.dumps(env, indent=2, ensure_ascii=False))
     return env
 
@@ -27,9 +29,9 @@ def _iter_nodes(x: Json) -> Iterable[Any]:
             yield v
             yield from _iter_nodes(v)
 
-def rows_from_env(env) -> list:
+def rows_from_env(env: Dict[str, Any]) -> List[Any]:
     """
-    Extrae filas desde la respuesta del Engine soportando SELECT y KNN.
+    Extrae filas soportando SELECT y KNN.
     Formatos aceptados:
       - {"results":[{"action":"knn","data":[{...}, ...]}]}
       - {"results":[{"action":"select","data":[...]}]}
@@ -38,12 +40,12 @@ def rows_from_env(env) -> list:
     if not isinstance(env, dict):
         return []
 
-    # 1) formatos directos
+    # directos
     for key in ("rows", "data"):
         if isinstance(env.get(key), list):
-            return env[key]
+            return env[key]  # type: ignore
 
-    # 2) resultados del engine (soporta 'knn' y 'select')
+    # results del engine
     out = []
     results = env.get("results")
     if isinstance(results, list):
@@ -57,10 +59,9 @@ def rows_from_env(env) -> list:
     if out:
         return out
 
-    # 3) fallback muy defensivo: busca la 1ra lista asociada a 'data' en cualquier nodo
+    # fallback defensivo
     def walk(x):
         if isinstance(x, dict):
-            # prioriza claves 'data'
             if "data" in x and isinstance(x["data"], list):
                 return x["data"]
             for v in x.values():
@@ -97,52 +98,86 @@ def expect_any(actual_ids: List[int], expected_any: List[int], label: str) -> bo
     print(("✓" if ok else "✗"), f"{label}: got {actual_ids}, expected any of {expected_any}")
     return ok
 
-# ---------------- test ----------------
+def used_invtext(env: Dict[str, Any], field: str = "image_text") -> bool:
+    """Confirma que el plan reportó uso del índice invtext en esa consulta."""
+    for r in env.get("results", []):
+        meta = r.get("meta", {})
+        for u in meta.get("index_usage", []):
+            if u.get("index") == "invtext" and u.get("field") == field and u.get("op") in ("knn", "search"):
+                return True
+    return False
 
-def main():
-    # 0) Fixture
-    run_sql("DROP TABLE IF EXISTS multimedia;")
-    run_sql("""
-    CREATE TABLE multimedia (
-      id          INT PRIMARY KEY USING heap,
+# ---------------- fixture & checks ----------------
+
+def setup_table(pk_method: str, tname: str):
+    run_sql(f"DROP TABLE IF EXISTS {tname};")
+    run_sql(f"""
+    CREATE TABLE {tname} (
+      id          INT PRIMARY KEY USING {pk_method},
       title       VARCHAR(100),
       image_text  VARCHAR(300)
     );
     """)
-    run_sql("""
-    INSERT INTO multimedia (id, title, image_text) VALUES
+    run_sql(f"""
+    INSERT INTO {tname} (id, title, image_text) VALUES
     (1, 'Foto playa',       'playa mar arena verano'),
     (2, 'Foto nieve',       'nieve invierno montaña'),
     (3, 'Surf en playa',    'playa sol arena surf'),
     (4, 'Techno night',     'techno electronica rave'),
     (5, 'Atardecer playa',  'playa atardecer costa');
     """)
-    run_sql("""
-    CREATE INDEX IF NOT EXISTS multimedia_invtext_image_text
-      ON multimedia(image_text) USING invtext;
+    run_sql(f"""
+    CREATE INDEX IF NOT EXISTS ix_invtext_{tname}_image_text
+      ON {tname}(image_text) USING invtext;
     """)
 
-    # 1) Consultas con tu gramática
-    q1 = "SELECT id, title FROM multimedia WHERE image_text KNN <-> 'playa'  LIMIT 3;"
-    q2 = "SELECT id, title FROM multimedia WHERE image_text KNN <-> 'nieve'  LIMIT 1;"
-    q3 = "SELECT id, title FROM multimedia WHERE image_text KNN <-> 'techno' LIMIT 1;"
-    q4 = "SELECT id, title FROM multimedia WHERE image_text @@ 'playa' LIMIT 3;"
+def run_checks(pk_method: str) -> bool:
+    tname = f"multimedia_{pk_method}"
+    print(f"\n==============================")
+    print(f"E2E • InvText KNN • {tname}")
+    print(f"==============================")
+    setup_table(pk_method, tname)
 
-    env1 = run_sql(q1); rows1 = rows_from_env(env1); ids1 = extract_ids(rows1)
-    env2 = run_sql(q2); rows2 = rows_from_env(env2); ids2 = extract_ids(rows2)
-    env3 = run_sql(q3); rows3 = rows_from_env(env3); ids3 = extract_ids(rows3)
-    env4 = run_sql(q4); rows4 = rows_from_env(env4); ids4 = extract_ids(rows4)
-
-    # 2) Checks
     ok = True
-    ok &= expect_any(ids1, [1, 3, 5], "KNN 'playa'")
-    ok &= expect_any(ids2, [2],       "KNN 'nieve'")
-    ok &= expect_any(ids3, [4],       "KNN 'techno'")
-    print(("✓" if rows4 else "✗"), f"@@ 'playa' -> {ids4 or rows4}")
 
-    # 3) Exit code
-    print("\nResumen:", "OK" if ok and rows4 else "FALLÓ")
-    sys.exit(0 if (ok and rows4) else 1)
+    # Consultas con tu gramática
+    q_playa = f"SELECT id, title FROM {tname} WHERE image_text KNN <-> 'playa'  LIMIT 3;"
+    q_nieve = f"SELECT id, title FROM {tname} WHERE image_text KNN <-> 'nieve'  LIMIT 1;"
+    q_tech  = f"SELECT id, title FROM {tname} WHERE image_text KNN <-> 'techno' LIMIT 1;"
+    q_at    = f"SELECT id, title FROM {tname} WHERE image_text @@ 'playa' LIMIT 3;"
+
+    env1 = run_sql(q_playa); rows1 = rows_from_env(env1); ids1 = extract_ids(rows1)
+    env2 = run_sql(q_nieve); rows2 = rows_from_env(env2); ids2 = extract_ids(rows2)
+    env3 = run_sql(q_tech);  rows3 = rows_from_env(env3); ids3 = extract_ids(rows3)
+    env4 = run_sql(q_at);    rows4 = rows_from_env(env4); ids4 = extract_ids(rows4)
+
+    ok &= expect_any(ids1, [1, 3, 5], f"{pk_method} :: KNN 'playa'")
+    ok &= expect_any(ids2, [2],       f"{pk_method} :: KNN 'nieve'")
+    ok &= expect_any(ids3, [4],       f"{pk_method} :: KNN 'techno'")
+    print(("✓" if rows4 else "✗"), f"{pk_method} :: @@ 'playa' -> {ids4 or rows4}")
+
+    # Uso de índice invtext reportado por el engine
+    inv_used = used_invtext(env1) and used_invtext(env2) and used_invtext(env3)
+    print(("✓" if inv_used else "✗"), f"{pk_method} :: uso de índice invtext reportado")
+    ok &= inv_used
+
+    return ok
+
+def main():
+    backends = ["heap", "sequential", "isam", "bplus"]
+    all_ok = True
+    for pk in backends:
+        try:
+            ok = run_checks(pk)
+        except Exception as ex:
+            ok = False
+            print(f"✗ excepción en backend {pk}: {ex}")
+        all_ok = all_ok and ok
+
+    print("\n==============================")
+    print("RESUMEN GLOBAL:", "✓ OK" if all_ok else "✗ FALLÓ ALGUNO")
+    print("==============================")
+    sys.exit(0 if all_ok else 1)
 
 if __name__ == "__main__":
     main()

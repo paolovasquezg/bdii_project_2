@@ -14,11 +14,11 @@ KEYWORDS = {
     "INT","INTEGER","SMALLINT","BIGINT","FLOAT","REAL","DOUBLE",
     "PRECISION","CHAR","VARCHAR","STRING","BOOL","BOOLEAN",
     "TRUE","FALSE","NULL","LIKE","IN","IS","AS",
-    "FILE","POINT", "KNN"
+    "FILE","POINT", "KNN", "IMG", "LIMIT",
 }
 
 # operadores que necesitamos en este dialecto
-_TWO_CHAR_OPS = {"<=", ">=", "!=", "<>"}
+_TWO_CHAR_OPS = {"<=", ">=", "!=", "<>", "@@"}
 _SINGLE_OPS = set("=<>(),.;+-*")
 
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -48,6 +48,11 @@ def _tokenize(sql: str) -> List[Token]:
         if any(sql.startswith(op, i) for op in _TWO_CHAR_OPS):
             out.append(Token("OP", sql[i:i+2], i))
             i += 2
+            continue
+
+        if i + 3 <= n and sql[i:i + 3] == '<->':
+            out.append(Token('OP', '<->', i))
+            i += 3
             continue
 
         ch = sql[i]
@@ -95,7 +100,6 @@ def _tokenize(sql: str) -> List[Token]:
                 out.append(Token("IDENT", raw, i))
             i = m.end()
             continue
-
         raise SyntaxError(f"Carácter inesperado {sql[i]!r} en {i}")
     return out
 
@@ -180,6 +184,7 @@ class Select:
     table: str = ""
     columns: Optional[List[str]] = None   # None => "*"
     where: Optional[Any] = None
+    limit: int = 10
 
 @dataclass
 class Delete:
@@ -212,6 +217,18 @@ class GeoWithin:
 class Knn:
     ident: str              # columna (coords)
     point: Any              # {"kind":"point","x":..,"y":..}
+    k: int
+
+@dataclass
+class KnnImg:
+    ident: str           # columna con la ruta/imagen
+    img_path: str        # ruta de la query
+    k: int
+
+@dataclass
+class KnnText:
+    ident: str           # columna con la ruta/imagen
+    query_text: str        # ruta de la query
     k: int
 
 # ---------------------------
@@ -409,7 +426,7 @@ class _Parser:
             if self._accept("KW", "USING"):
                 col.pk_using = self._parse_method_token()
             return col
-        # INDEX USING <método>
+        # INDEX USING <metodo>
         if self._accept("KW", "INDEX"):
             self._expect("KW", "USING")
             col.inline_index = self._parse_method_token()
@@ -534,7 +551,19 @@ class _Parser:
         where = None
         if self._accept("KW", "WHERE"):
             where = self._parse_expr()
-        return Select(table=table, columns=cols, where=where)
+
+        limit_val = None
+        if self._accept("KW", "LIMIT"):
+            limit_lit = self._parse_literal()
+            try:
+                limit_val = int(limit_lit)
+            except Exception:
+                raise SyntaxError("LIMIT debe ser un entero")
+
+        try:
+            return Select(table=table, columns=cols, where=where, limit=limit_val)
+        except NameError:
+            return {"kind": "select", "table": table, "columns": cols, "where": where, "limit": limit_val}
 
     # WHERE expression
     def _parse_expr(self):
@@ -559,16 +588,50 @@ class _Parser:
 
         ident = self._parse_ident()
 
+        # Texto estilo FTS: campo @@ 'frase de consulta'
+        if self._accept("OP", "@@"):
+            q = self._parse_literal()
+            try:
+                return KnnText(ident=ident, query_text=str(q), k=8)
+            except NameError:
+                return {"ident": ident, "query_text": str(q), "k": 8}
+
         if self._accept("KW", "KNN"):
-            self._expect("OP", "(")
+            # --- Operador de similitud:  columna <-> RHS ---
+            if self._accept("OP", "<->"):
+                # Forma explícita: IMG('ruta')
+                if self._accept("KW", "IMG"):
+                    self._expect("OP", "(")
+                    img_lit = self._parse_literal()
+                    self._expect("OP", ")")
+                    try:
+                        return KnnImg(ident=ident, img_path=str(img_lit), k=8)
+                    except NameError:
+                        return {"ident": ident, "img_path": str(img_lit), "k": 8}
+
+                # Forma literal: 'algo'  -> si parece imagen, tratamos como imagen; si no, como texto
+                rhs = self._parse_literal()
+                if isinstance(rhs, str) and rhs.lower().endswith((
+                        ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp"
+                )):
+                    try:
+                        return KnnImg(ident=ident, img_path=rhs, k=8)
+                    except NameError:
+                        return {"ident": ident, "img_path": rhs, "k": 8}
+                else:
+                    try:
+                        return KnnText(ident=ident, query_text=str(rhs), k=8)
+                    except NameError:
+                        return {"ident": ident, "query_text": str(rhs), "k": 8}
+
             center = self._parse_point()  # POINT(x,y)
             self._expect("OP", ",")
-            k_lit = self._parse_literal()  # k
+            k_lit = self._parse_literal()
             self._expect("OP", ")")
             try:
                 k_val = int(float(k_lit))
             except Exception:
-                raise SyntaxError("k debe ser entero en KNN(...)")
+                raise SyntaxError("k debe ser entero en KNN(POINT(...), k)")
             return Knn(ident=ident, point=center, k=k_val)
 
         if self._accept("KW", "BETWEEN"):
@@ -649,7 +712,6 @@ class _Parser:
             return Delete(table=table, where=where)
         except NameError:
             return {"kind": "delete", "table": table, "where": where}
-
 
 # ---------------------------
 # API de alto nivel

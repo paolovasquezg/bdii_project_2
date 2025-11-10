@@ -1,11 +1,12 @@
 from pathlib import Path
 from typing import List, Dict, Optional
 
+import os
 from backend.catalog.settings import DATA_DIR
 from backend.catalog.catalog import load_tables, save_tables, put_json, table_meta_path, get_json
 import shutil
 
-
+from backend.storage.indexes.bovw import BoVWFile
 from backend.storage.indexes.hash import ExtendibleHashingFile
 from backend.storage.indexes.heap import HeapFile
 from backend.storage.indexes.sequential import SeqFile
@@ -108,6 +109,42 @@ def backfill_secondary(table: str, column: str, relation: dict, indexes: dict):
         # Close cached rtrees to persist headers
         file_inst._close_cached_rtrees()
 
+    elif sec_kind == "bovw":
+        pk_name = _find_pk_name(relation)
+        if not pk_name:
+            return
+        main = indexes["primary"]["filename"]
+        prim_kind = indexes["primary"]["index"]
+
+        base_dir = sec_file  # carpeta ya registrada
+        bv = BoVWFile(base_dir, key=column,
+                      heap_file=(main if prim_kind == "heap" else None))
+
+        records = get_physical_records(main, prim_kind, True)
+
+        if prim_kind == "heap":
+            valid = []
+            for pair in records:
+                if not isinstance(pair, tuple) or len(pair) != 2:
+                    continue
+                row, pos = pair
+                if isinstance(row, dict) and pk_name in row and column in row:
+                    p = str(row[column])
+                    if p and os.path.exists(p):
+                        valid.append((row, pos))
+        else:
+            valid = []
+            for r in records:
+                if isinstance(r, dict) and pk_name in r and column in r:
+                    p = str(r[column])
+                    if p and os.path.exists(p):
+                        valid.append(r)
+
+        if not valid:
+            return  # dejar índice vacío pero consistente
+
+        bv.build_bulk(valid, image_field=column, pk_name=pk_name, main_index=prim_kind)
+
 def _canon_index_kind(method: str) -> str:
     m = (method or "").strip().lower().replace(" ", "")
     if m in ("b+", "bplus", "btree", "b-tree"):
@@ -123,6 +160,8 @@ def _canon_index_kind(method: str) -> str:
     if m in ("heap",):
         return "heap"
     # fallback sin romper
+    if m in ("bovw","bow","visual","ivf","img","image"):
+        return "bovw"
     return m or "heap"
 
 def _filename_token(method: str) -> str:
@@ -298,25 +337,28 @@ def delete_index(fields: list[dict], column: str):
 
 def create_index(table: str, column: str, method: str):
     """
-    Crea un índice secundario en DATA_DIR/<table>/<table>-<methodToken>-<column>.dat
-    y actualiza el metadato <table>.dat (indexes[column]).
-    No recrea si ya existe.
+    Crea un índice secundario.
+      - BoVW:  DATA_DIR/<table>/<table>-bovw-<column>  (carpeta con artefactos)
+      - Otros: DATA_DIR/<table>/<table>_<token>_<column>.dat (archivo)
+    Actualiza <table>.dat (indexes[column]). No recrea si ya existe.
     """
+    import os, shutil, json
+    from pathlib import Path
+
     meta = table_meta_path(table)
     relation, indexes = get_json(str(meta), 2)
 
     if not table or column in indexes:
         return
-    
+
+    # --- Si están cambiando el índice de la PK (tu rama original) ---
     if "key" in relation[column] and relation[column]["key"] == "primary":
         if method == "hash" or method == "rtree":
             return
-
         mainfilename = indexes["primary"]["filename"]
-        main_index = indexes["primary"]["index"]
+        main_index   = indexes["primary"]["index"]
 
         records = get_physical_records(mainfilename, main_index, True)
-
         if main_index == "heap":
             records = [row for (row, _pos) in records]
 
@@ -328,43 +370,133 @@ def create_index(table: str, column: str, method: str):
 
         InsFile = File(table)
         InsFile.execute({"op": "build", "records": records})
-
         try:
             InsFile._close_cached_rtrees()
         except Exception:
             pass
-    
-    else:
-        kind = _canon_index_kind(method)
-        token = _filename_token(method)
+        return
 
-        idx_path = DATA_DIR / table / f"{table}_{token}_{column}.dat"
-        idx_file = str(idx_path)
+    # --- Secundarios ---
+    kind  = _canon_index_kind(method)
+    token = _filename_token(method)
 
-        col_spec = {"name": column, **relation.get(column, {})}
+    if kind == "bovw":
+        import json, shutil
         pk_name = _find_pk_name(relation)
         if not pk_name:
             raise ValueError(f"No se pudo determinar PK para la tabla {table}")
-        pk_spec = relation[pk_name]
 
-        idx_schema = [col_spec]
-        primary_index_type = indexes.get("primary", {}).get("index", "heap")
-        if primary_index_type == "heap":
-            idx_schema.append({"name": "pos", "type": "i"})
+        mainfilename = indexes["primary"]["filename"]
+        prim_kind    = indexes["primary"]["index"]
+
+        # Trae físico
+        records = get_physical_records(mainfilename, prim_kind, True)
+
+        # Filtra preservando forma esperada por BoVW:
+        if prim_kind == "heap":
+            # records: [(row_dict, pos), ...]
+            valid = []
+            for pair in records:
+                if not isinstance(pair, tuple) or len(pair) != 2:
+                    continue
+                row, pos = pair
+                if not isinstance(row, dict):
+                    continue
+                if pk_name not in row or column not in row:
+                    continue
+                p = str(row[column])
+                if not p or not os.path.exists(p):
+                    continue
+                valid.append((row, pos))  # ← preserva tupla
         else:
-            if "length" in pk_spec:
-                idx_schema.append({"name": "pk", "type": pk_spec["type"], "length": pk_spec["length"]})
-            else:
-                idx_schema.append({"name": "pk", "type": pk_spec["type"]})
-        idx_schema.append({"name": "deleted", "type": "?"})
+            # records: [row_dict, ...]
+            valid = []
+            for r in records:
+                if not isinstance(r, dict):
+                    continue
+                if pk_name not in r or column not in r:
+                    continue
+                p = str(r[column])
+                if not p or not os.path.exists(p):
+                    continue
+                valid.append(r)
 
-        put_json(idx_file, [idx_schema])
-        indexes[column] = {"index": kind, "filename": idx_file}
-        put_json(str(meta), [relation, indexes])
+        if not valid:
+            raise ValueError("No hay imágenes válidas para construir el índice BoVW.")
+
+        # Construye en tmp y mueve
+        base_dir = DATA_DIR / table / f"{table}-bovw-{column}"
+        tmp_dir  = DATA_DIR / table / f".tmp-{table}-bovw-{column}"
+        os.makedirs(tmp_dir, exist_ok=True)
+
         try:
-            backfill_secondary(table, column, relation, indexes)
+            bv = BoVWFile(str(tmp_dir), key=column,
+                          heap_file=(mainfilename if prim_kind == "heap" else None))
+
+            # No asumir retorno
+            bv.build_bulk(valid, image_field=column, pk_name=pk_name, main_index=prim_kind)
+
+            dm = os.path.join(str(tmp_dir), "doc_map.json")
+            if not os.path.exists(dm):
+                raise RuntimeError("BoVW build no generó doc_map.json")
+            with open(dm, "r", encoding="utf-8") as f:
+                doc_map = json.load(f)
+            if not isinstance(doc_map, dict) or not doc_map:
+                raise RuntimeError("BoVW doc_map.json vacío (0 documentos indexados)")
+
+            if os.path.exists(base_dir):
+                shutil.rmtree(base_dir, ignore_errors=True)
+            shutil.move(str(tmp_dir), str(base_dir))
+
+            indexes[column] = {"index": "bovw", "filename": str(base_dir)}
+            put_json(str(meta), [relation, indexes])
+
         except Exception as e:
-            pass
+            try:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            finally:
+                raise RuntimeError(
+                    f"Fallo construyendo BoVW({table}.{column}) con {len(valid)} imágenes; "
+                    f"primario={prim_kind}; detalle={type(e).__name__}: {e}"
+                )
+        finally:
+            try:
+                F = File(table)
+                if hasattr(F, "_close_cached_rtrees"): F._close_cached_rtrees()
+                if hasattr(F, "_close_cached_bovw"):   F._close_cached_bovw()
+            except Exception:
+                pass
+        return
+
+    # ===== Resto (hash/bplus/rtree, etc. como ya tenías) =====
+    idx_path = DATA_DIR / table / f"{table}-{token}-{column}.dat"
+    idx_file = str(idx_path)
+
+    col_spec = {"name": column, **relation.get(column, {})}
+    pk_name = _find_pk_name(relation)
+    if not pk_name:
+        raise ValueError(f"No se pudo determinar PK para la tabla {table}")
+    pk_spec = relation[pk_name]
+
+    idx_schema = [col_spec]
+    primary_index_type = indexes.get("primary", {}).get("index", "heap")
+    if primary_index_type == "heap":
+        idx_schema.append({"name": "pos", "type": "i"})
+    else:
+        if "length" in pk_spec:
+            idx_schema.append({"name": "pk", "type": pk_spec["type"], "length": pk_spec["length"]})
+        else:
+            idx_schema.append({"name": "pk", "type": pk_spec["type"]})
+    idx_schema.append({"name": "deleted", "type": "?"})
+
+    put_json(idx_file, [idx_schema])
+    indexes[column] = {"index": kind, "filename": idx_file}
+    put_json(str(meta), [relation, indexes])
+
+    try:
+        backfill_secondary(table, column, relation, indexes)
+    except Exception:
+        pass
 
 def drop_index(table: Optional[str], column_or_name: Optional[str]):
     """
@@ -403,9 +535,15 @@ def drop_index(table: Optional[str], column_or_name: Optional[str]):
 
     else:
         try:
-            Path(indexes[col]["filename"]).unlink(missing_ok=True)
+            info = indexes.get(col)
+            if info:
+                if info.get("index") == "bovw":
+                    shutil.rmtree(info["filename"], ignore_errors=True)
+                else:
+                    Path(info["filename"]).unlink(missing_ok=True)
         except Exception:
             pass
 
-        del indexes[col]
+        if col in indexes:
+            del indexes[col]
         put_json(str(meta), [relation, indexes])

@@ -212,6 +212,34 @@ class Planner:
                             # fallback genérico (no debería ocurrir si parseamos POINT)
                             plans.append({"action": "select", "table": table, "columns": cols, "where": where})
 
+                    elif {"ident", "img_path", "k"} <= set(where.keys()):
+                        k_eff = int(where["k"])
+                        lim = d.get("limit")
+                        if isinstance(lim, int) and lim > 0:
+                            k_eff = lim
+                        plans.append({
+                            "action": "knn",
+                            "table": table,
+                            "field": where["ident"],
+                            "img_path": where["img_path"],
+                            "k": k_eff,
+                            "post_filter": None
+                        })
+
+                    elif {"ident", "query_text", "k"} <= set(where.keys()):
+                        k_eff = int(where["k"])
+                        lim = d.get("limit")
+                        if isinstance(lim, int) and lim > 0:
+                            k_eff = lim
+                        plans.append({
+                            "action": "knn",
+                            "table": table,
+                            "field": where["ident"],  # ej. 'content' o 'title'
+                            "query_text": where["query_text"],
+                            "k": k_eff,
+                            "post_filter": None
+                        })
+
                     # 5) AND entre (BETWEEN) y (=) en cualquier orden -> range + post_filter
                     elif where.get("op") == "AND" and isinstance(where.get("items"), list) and len(where["items"]) == 2:
                         a, b = where["items"]

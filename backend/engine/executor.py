@@ -602,6 +602,19 @@ class Executor:
                             rows = F.execute({"op": "range_search", "field": where["ident"],
                                               "min": where["lo"], "max": where["hi"]}) or []
                             _emit_ok(rows)
+                        elif isinstance(where, dict) and "ident" in where and (
+                                "img_path" in where or "query_text" in where or "point" in where
+                        ):
+                            k = int(p.get("limit") or where.get("k") or 10)
+                            payload = {"op": "knn", "field": where["ident"], "k": k}
+                            if "img_path" in where:
+                                payload["img_path"] = where["img_path"]
+                            elif "query_text" in where:
+                                payload["query_text"] = where["query_text"]
+                            else:
+                                payload["point"] = where["point"]
+                            rows = F.execute(payload) or []
+                            _emit_ok(rows)
                         else:
                             results.append(err_result("select", "UNSUPPORTED_SELECT",
                                                       "Forma de SELECT no soportada (usa search/range).",

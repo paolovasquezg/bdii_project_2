@@ -5,6 +5,8 @@ from backend.storage.indexes.isam import IsamFile
 from backend.storage.indexes.rtree import RTree
 from backend.storage.indexes.hash import ExtendibleHashingFile
 from backend.storage.indexes.bplus import BPlusFile
+from backend.storage.indexes.invtext import InvTextFile
+
 import json as _json
 import struct
 import csv
@@ -38,7 +40,8 @@ class File:
         self._io = self._new_io()
         self.last_io = self._new_io()
         self._index_usage = []
-        self._cached_rtree = {}  # {field_name: RTree_wrapper} для переиспользования
+        self._cached_rtree = {}  # {field_name: RTree_wrapper}
+        self._cached_bovw = {}  # {field_name: BoVWFile}
 
     # ------------------------------ IO accounting ------------------------------------ #
 
@@ -138,6 +141,28 @@ class File:
         if reuse_cached:
             self._cached_rtree[field] = rt
         return rt
+
+    def _make_bovw(self, field: str, *, reuse_cached: bool = False):
+        """Crea o reutiliza BoVWFile usando indexes[field]['filename'] como base_dir (directorio)."""
+        if reuse_cached and field in self._cached_bovw:
+            return self._cached_bovw[field]
+        from backend.storage.indexes.bovw import BoVWFile
+        idx_meta = self.indexes[field]
+        base_dir = idx_meta["filename"]  # aquí guardaremos un directorio
+        bv = BoVWFile(base_dir, key=field,
+                      heap_file=(
+                          self.indexes["primary"]["filename"] if self.indexes["primary"]["index"] == "heap" else None))
+        if reuse_cached:
+            self._cached_bovw[field] = bv
+        return bv
+
+    def _close_cached_bovw(self):
+        for bv in self._cached_bovw.values():
+            try:
+                bv.close()
+            except Exception:
+                pass
+        self._cached_bovw.clear()
 
     def _close_cached_rtrees(self):
         """Cierra todos los RTree cacheados (persist header)."""
@@ -726,24 +751,66 @@ class File:
     def knn(self, params: dict):
         field = params["field"]
         if field not in self.indexes:
-            self.last_io = self.io_get(); return []
-        if "key" in self.relation.get(field, {}) and self.relation[field]["key"] == "primary":
-            self.last_io = self.io_get(); return []
-        if self.indexes[field]["index"] != "rtree":
-            self.last_io = self.io_get(); return []
-        try:
-            is_heap = (self.indexes["primary"]["index"] == "heap")
-            rt = self._make_rtree(field, heap_ok=is_heap)
-            items = rt.knn(params["point"][0], params["point"][1], params["k"])
-            self.io_merge(rt, "rtree")
-            self.index_log("secondary", "rtree", field, "knn")
-            out = self._bridge_from_rtree(items)
-            self.last_io = self.io_get()
-            return out
-        except Exception as e:
-            if DEBUG_IDX: print("[RTREE knn] skip:", e)
             self.last_io = self.io_get()
             return []
+
+        # no es primario
+        if "key" in self.relation.get(field, {}) and self.relation[field]["key"] == "primary":
+            self.last_io = self.io_get()
+            return []
+
+        kind = self.indexes[field]["index"]
+
+        # --- RTree (geo) existente ---
+        if kind == "rtree":
+            try:
+                is_heap = (self.indexes["primary"]["index"] == "heap")
+                rt = self._make_rtree(field, heap_ok=is_heap)
+                items = rt.knn(params["point"][0], params["point"][1], params["k"])
+                self.io_merge(rt, "rtree")
+                self.index_log("secondary", "rtree", field, "knn")
+                out = self._bridge_from_rtree(items)
+                self.last_io = self.io_get()
+                return out
+            except Exception as e:
+                if DEBUG_IDX: print("[RTREE knn] skip:", e)
+                self.last_io = self.io_get()
+                return []
+
+        # --- BoVW (imágenes) nuevo ---
+        if kind == "bovw":
+            try:
+                img_path = params.get("img_path") or params.get("query_image_path")
+                k = int(params.get("k") or 8)
+                if not img_path:
+                    self.last_io = self.io_get();
+                    return []
+
+                bv = self._make_bovw(field, reuse_cached=True)
+                pks = bv.knn(img_path, k)
+                # Resolver filas por PK (consistente con _bridge_from_rtree)
+                rows = []
+                for pkval in pks:
+                    recs = self.search({"op": "search", "field": self.primary_key, "value": pkval}) or []
+                    if not recs: continue
+                    r0 = recs[0][0] if isinstance(recs[0], tuple) else recs[0]
+                    if isinstance(r0, dict): rows.append(r0)
+                # IO merge básico
+                try:
+                    self._io["bovw"]["read"] += getattr(bv, "read_count", 0)
+                except:
+                    pass
+                self.index_log("secondary", "bovw", field, "knn")
+                self.last_io = self.io_get()
+                return rows
+            except Exception as e:
+                if DEBUG_IDX: print("[BOVW knn] skip:", e)
+                self.last_io = self.io_get()
+                return []
+
+        # fallback: no soportado
+        self.last_io = self.io_get()
+        return []
 
     # ----------------------------------- DML remove --------------------------------- #
 

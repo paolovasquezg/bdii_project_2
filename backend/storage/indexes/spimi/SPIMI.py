@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 
 import string
 import nltk
@@ -299,65 +298,65 @@ if __name__ == "__main__":
     ARCHIVO_IDF = "idf_scores.jsonl"
     ARCHIVO_NORMAS = "doc_norms.json"
 
-    # print("--- INICIANDO PIPELINE DE INDEXACIÓN ---")
-    # directorio_temp, N_docs, num_bloques = construir_indice_spimi(
-    #     ARCHIVO_DATOS,
-    #     ARCHIVO_LISTA_PARADA,
-    #     COLUMNA_TEXTO,
-    #     tamano_bloque=1000
-    # )
-    # fusionar_bloques_spimi(
-    #     directorio_temp,
-    #     ARCHIVO_INDICE_FINAL,
-    #     ARCHIVO_METADATOS,
-    #     N_docs
-    # )
-    # calcular_pesos(
-    #     ARCHIVO_INDICE_FINAL,
-    #     ARCHIVO_METADATOS,
-    #     ARCHIVO_IDF,
-    #     ARCHIVO_NORMAS
-    # )
-    # print("--- PIPELINE DE INDEXACIÓN COMPLETADO ---")
+    print("--- INICIANDO PIPELINE DE INDEXACIÓN ---")
+    directorio_temp, N_docs, num_bloques = construir_indice_spimi(
+        ARCHIVO_DATOS,
+        ARCHIVO_LISTA_PARADA,
+        COLUMNA_TEXTO,
+        tamano_bloque=1000
+    )
+    fusionar_bloques_spimi(
+        directorio_temp,
+        ARCHIVO_INDICE_FINAL,
+        ARCHIVO_METADATOS,
+        N_docs
+    )
+    calcular_pesos(
+        ARCHIVO_INDICE_FINAL,
+        ARCHIVO_METADATOS,
+        ARCHIVO_IDF,
+        ARCHIVO_NORMAS
+    )
+    print("--- PIPELINE DE INDEXACIÓN COMPLETADO ---")
 
-    print("\n--- INICIANDO SERVICIO DE CONSULTAS ---")
-
-    lematizador_consulta = SnowballStemmer('spanish')
-    stopwords_consulta = obtener_lista_parada(ARCHIVO_LISTA_PARADA)
-
-    try:
-        puntajes_idf_memoria = cargar_idfs(ARCHIVO_IDF)
-        normas_doc_memoria = cargar_normas(ARCHIVO_NORMAS)
-        indice_invertido_memoria = cargar_indice_invertido(ARCHIVO_INDICE_FINAL)
-    except FileNotFoundError:
-        print("\nError: Archivos de índice no encontrados.")
-        print("Por favor, descomenta el 'PASO 1' y ejecuta el script para crear los índices primero.")
-        exit()
-
-    print("\n--- ¡Sistema listo para recibir consultas! ---")
-
-    lista_consultas = [
-        "presidente de colombia",
-        "sostenibilidad y finanzas",
-        "tecnología futurista y moda"
-    ]
-
-    for consulta in lista_consultas:
-        print(f"\nProcesando consulta: '{consulta}'")
-
-        resultados = rankear_consulta(
-            consulta,
-            lematizador_consulta,
-            stopwords_consulta,
-            indice_invertido_memoria,
-            puntajes_idf_memoria,
-            normas_doc_memoria,
-            top_k=5
-        )
-
-        if not resultados:
-            print("No se encontraron resultados relevantes.")
-        else:
-            print(f"Top {len(resultados)} resultados relevantes:")
-            for id_doc, score in resultados:
-                print(f"  DocID: {id_doc} (Score: {score:.4f})")
+    # print("\n--- INICIANDO SERVICIO DE CONSULTAS ---")
+    #
+    # lematizador_consulta = SnowballStemmer('spanish')
+    # stopwords_consulta = obtener_lista_parada(ARCHIVO_LISTA_PARADA)
+    #
+    # try:
+    #     puntajes_idf_memoria = cargar_idfs(ARCHIVO_IDF)
+    #     normas_doc_memoria = cargar_normas(ARCHIVO_NORMAS)
+    #     indice_invertido_memoria = cargar_indice_invertido(ARCHIVO_INDICE_FINAL)
+    # except FileNotFoundError:
+    #     print("\nError: Archivos de índice no encontrados.")
+    #     print("Por favor, descomenta el 'PASO 1' y ejecuta el script para crear los índices primero.")
+    #     exit()
+    #
+    # print("\n--- ¡Sistema listo para recibir consultas! ---")
+    #
+    # lista_consultas = [
+    #     "presidente de colombia",
+    #     "sostenibilidad y finanzas",
+    #     "tecnología futurista y moda"
+    # ]
+    #
+    # for consulta in lista_consultas:
+    #     print(f"\nProcesando consulta: '{consulta}'")
+    #
+    #     resultados = rankear_consulta(
+    #         consulta,
+    #         lematizador_consulta,
+    #         stopwords_consulta,
+    #         indice_invertido_memoria,
+    #         puntajes_idf_memoria,
+    #         normas_doc_memoria,
+    #         top_k=5
+    #     )
+    #
+    #     if not resultados:
+    #         print("No se encontraron resultados relevantes.")
+    #     else:
+    #         print(f"Top {len(resultados)} resultados relevantes:")
+    #         for id_doc, score in resultados:
+    #             print(f"  DocID: {id_doc} (Score: {score:.4f})")

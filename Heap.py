@@ -246,7 +246,7 @@ class HeapFile:
                 temp_record = Record.unpack(data, self.format, self.schema)
                 
                 del temp_record.fields["deleted"]
-                ret_records.append(temp_record.fields)
+                ret_records.append((temp_record.fields, record[1]))
 
         return ret_records
 

@@ -1,7 +1,7 @@
 from Methods import get_json, get_filename, put_json
 from Heap import HeapFile
-from spimi.gestor_indice_spimi import createInvertedIndex, addInvertedIndex, finalizar_indice_spimi
-from spimi.buscador import BuscadorSPIMI
+from gestor_indice_spimi import createInvertedIndex, addInvertedIndex, finalizar_indice_spimi
+from buscador import BuscadorSPIMI
 import shutil
 import psutil
 import os
@@ -145,26 +145,29 @@ class File:
 
     def text_search(self, column: str, consulta: str, k: int):
         if column not in self.relation or column not in self.indexes:
-            return
-        
+            return []
+
         exists = False
         folder = ""
 
         for index in self.indexes:
-             if index == column and self.indexes[index]["index"] == "inverted_text":
+            if index == column and self.indexes[index]["index"] == "inverted_text":
                 exists = True
                 folder = self.indexes[index]["folder"]
                 break
-        
+
         records = []
-    
+
         if exists:
             buscador = BuscadorSPIMI(f"{folder}bloques")
-            ranking = buscador.rankear_consulta(consulta, k)
-            mainfilename = self.indexes["primary"]["filename"]
-            RecFile = HeapFile(mainfilename)
-            records = RecFile.search_using_pos_ranking(ranking)
-    
+            try:
+                ranking = buscador.rankear_consulta(consulta, k)
+                mainfilename = self.indexes["primary"]["filename"]
+                RecFile = HeapFile(mainfilename)
+                records = RecFile.search_using_pos_ranking(ranking)
+            finally:
+                buscador.cerrar()
+
         return records
 
     def execute(self, params: dict):

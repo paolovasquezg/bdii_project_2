@@ -25,7 +25,7 @@ for path, desc in zip(image_paths, per_image_desc):
 print("Histogramas generados.")
 
 
-query_path = image_paths[0]   # escogemos la primera imagen del dataset
+query_path = image_paths[0]   
 query_hist = compute_query_histogram(query_path, kmeans, k)
 
 print("Histograma del query generado.")

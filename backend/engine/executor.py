@@ -400,6 +400,7 @@ class Executor:
                 # ------------------------------- DML ------------------------------- #
                 elif action in ("insert","remove","search","range_search","knn","search_in","geo_within","select"):
                     F = File(table)
+                    cols = p.get("columns")
 
                     if action == "search_in":
                         field = p["field"]; items = list(p.get("items") or [])
@@ -633,6 +634,15 @@ class Executor:
                         pf = p.get("post_filter")
                         if pf and isinstance(rows, list):
                             rows = [r for r in rows if isinstance(r, dict) and r.get(pf["field"]) == pf["value"]]
+                        # proyección de columnas si corresponde
+                        if cols:
+                            norm = []
+                            for r in rows:
+                                if isinstance(r, tuple) and len(r) >= 1:
+                                    r = r[0]
+                                if isinstance(r, dict):
+                                    norm.append(_project_row(r, cols))
+                            rows = norm
                         data, cnt = _sanitize_rows(rows)
                         io = F.io_get();
                         idx = F.index_get()

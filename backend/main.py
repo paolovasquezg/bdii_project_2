@@ -1,4 +1,7 @@
-from fastapi import FastAPI, HTTPException
+import os
+import uuid
+from pathlib import Path
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from backend.catalog.ddl import load_tables
 from backend.engine.engine import Engine
@@ -19,6 +22,9 @@ engine = Engine()
 
 class Query(BaseModel):
     content: str
+
+UPLOAD_DIR = Path(__file__).resolve().parent / "runtime" / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 @app.get("/")
 def root():
@@ -41,3 +47,47 @@ def get_tables():
 @app.post("/query")
 def do_query(query: Query):
     return engine.run(query.content)
+
+
+@app.post("/upload-media")
+async def upload_media(file: UploadFile = File(...)):
+    """
+    Recibe imagen/audio y lo guarda en backend/runtime/uploads/<uuid>.<ext>.
+    Devuelve la ruta absoluta para usarla en queries (ej. INSERT o KNN IMG()).
+    """
+    # Validación básica de tipo
+    ct = (file.content_type or "").lower()
+    if not (ct.startswith("image/") or ct.startswith("audio/") or ct in ("application/octet-stream",)):
+        raise HTTPException(status_code=400, detail="Solo se permiten imágenes o audios.")
+
+    # Derivar extensión
+    filename = file.filename or ""
+    ext = ""
+    if "." in filename:
+        ext = filename.rsplit(".", 1)[1].lower()
+    if not ext:
+        # fallback por mime
+        if ct.startswith("image/"):
+            ext = ct.split("/", 1)[1]
+        elif ct.startswith("audio/"):
+            ext = ct.split("/", 1)[1]
+        else:
+            ext = "bin"
+
+    dest_name = f"{uuid.uuid4().hex}.{ext}"
+    dest_path = UPLOAD_DIR / dest_name
+
+    try:
+        with dest_path.open("wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+    finally:
+        await file.close()
+
+    # guardar path en env para fallback
+    os.environ["BD2_LAST_UPLOAD_PATH"] = str(dest_path)
+
+    return {"ok": True, "path": str(dest_path)}

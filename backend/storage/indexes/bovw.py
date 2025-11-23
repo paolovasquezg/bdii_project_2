@@ -41,6 +41,8 @@ class BoVWFile:
         self.doc_map: Dict[Union[int, str], dict] = {}
         self.vectors: Dict[Union[int, str], np.ndarray] = {}
         self.idf: np.ndarray | None = None
+        self.tfidf_vectors: Dict[Union[int, str], np.ndarray] = {}
+        self.inverted: Dict[int, List[Tuple[Union[int, str], float]]] = {}
         self.dim: int = 0
         self._loaded = False
 
@@ -52,6 +54,7 @@ class BoVWFile:
     def _feature_vector(self, path: str) -> np.ndarray:
         """Histograma de intensidades (32 bins) normalizado."""
         img = Image.open(path).convert("L")
+        self.read_count += 1  # contar lectura de imagen
         img = img.resize((64, 64))
         arr = np.asarray(img, dtype=np.float32)
         hist, _ = np.histogram(arr, bins=32, range=(0, 255))
@@ -101,6 +104,17 @@ class BoVWFile:
             except Exception:
                 self.idf = None
 
+        inv_path = os.path.join(self.base_dir, "inverted_index.json")
+        if os.path.exists(inv_path):
+            try:
+                with open(inv_path, "r", encoding="utf-8") as f:
+                    raw = json.load(f) or {}
+                    self.inverted = {int(k): [(dk if not str(dk).isdigit() else int(dk), float(w)) for dk, w in v]
+                                     for k, v in raw.items()}
+                self.read_count += 1
+            except Exception:
+                self.inverted = {}
+
         self._loaded = bool(self.doc_map or self.vectors)
 
     def _persist(self):
@@ -110,17 +124,20 @@ class BoVWFile:
         doc_map_path = os.path.join(self.base_dir, "doc_map.json")
         with open(doc_map_path, "w", encoding="utf-8") as f:
             json.dump({str(k): v for k, v in self.doc_map.items()}, f, ensure_ascii=False)
+        self.write_count += 1
 
         # postings
         postings_path = os.path.join(self.base_dir, "postings.json")
         with open(postings_path, "w", encoding="utf-8") as f:
             json.dump({str(k): v.tolist() for k, v in self.vectors.items()}, f)
+        self.write_count += 1
 
         # idf
         if self.idf is None and self.vectors:
             self._compute_idf()
         if self.idf is not None:
             np.save(os.path.join(self.base_dir, "idf.npy"), self.idf)
+            self.write_count += 1
 
         # codebook stub
         cb_obj = {"dim": int(self.dim or (next(iter(self.vectors.values())).shape[0] if self.vectors else 0))}
@@ -133,8 +150,17 @@ class BoVWFile:
         except Exception:
             with open(codebook_path, "wb") as f:
                 pickle.dump(cb_obj, f)
+        self.write_count += 1
 
-        self.write_count += 4
+        # inverted (opcional para kNN sparse)
+        self._ensure_tfidf_and_inverted()
+        if self.inverted:
+            inv_path = os.path.join(self.base_dir, "inverted_index.json")
+            with open(inv_path, "w", encoding="utf-8") as f:
+                json.dump({int(k): [(str(d), w) for d, w in v] for k, v in self.inverted.items()}, f)
+            self.write_count += 1
+
+        # postings + doc_map se contaron en writes anteriores
 
     def _compute_idf(self):
         if not self.vectors:
@@ -145,6 +171,38 @@ class BoVWFile:
         N = arr.shape[0]
         self.idf = np.log((N + 1) / (df + 1))
         self.dim = int(self.idf.shape[0])
+
+    def _ensure_tfidf_and_inverted(self):
+        """Construye tfidf y un índice invertido ligero sobre los clusters."""
+        if not self.vectors:
+            return
+        if self.idf is None:
+            self._compute_idf()
+        # Evita tfidf nulo cuando df == N en todos los bins (idf=0); usa tf en ese caso.
+        idf_eff = self.idf
+        if idf_eff is not None and np.allclose(idf_eff, 0):
+            idf_eff = np.ones_like(idf_eff)
+        self.tfidf_vectors = {}
+        self.inverted = {}
+        for doc_id, vec in self.vectors.items():
+            tfidf = np.array(vec, dtype=float, copy=True)
+            if idf_eff is not None and idf_eff.shape[0] == vec.shape[0]:
+                tfidf = tfidf * idf_eff
+            self.tfidf_vectors[doc_id] = tfidf
+            any_w = False
+            for idx, w in enumerate(tfidf):
+                if w <= 0:
+                    continue
+                any_w = True
+                bucket = self.inverted.setdefault(idx, [])
+                bucket.append((doc_id, float(w)))
+            # Si tfidf quedó todo en cero (idf=0 en bins usados), usar TF puro.
+            if not any_w:
+                for idx, w in enumerate(vec):
+                    if w <= 0:
+                        continue
+                    bucket = self.inverted.setdefault(idx, [])
+                    bucket.append((doc_id, float(w)))
 
     def _ensure_loaded(self):
         self._load_artifacts()
@@ -187,7 +245,46 @@ class BoVWFile:
         self._persist()
         self._loaded = True
 
-    def knn(self, img_path: str, k: int = 5) -> List[Union[int, str]]:
+    def _knn_dense(self, q_vec: np.ndarray, norm_q: float) -> List[Tuple[Union[int, str], float]]:
+        scores_list: List[Tuple[Union[int, str], float]] = []
+        idf_eff = self.idf
+        if idf_eff is not None and np.allclose(idf_eff, 0):
+            idf_eff = np.ones_like(idf_eff)
+        for doc_id, vec in self.vectors.items():
+            dv = vec
+            if idf_eff is not None and idf_eff.shape[0] == dv.shape[0]:
+                dv = dv * idf_eff
+            norm_d = float(np.linalg.norm(dv))
+            if norm_d == 0.0:
+                dv = vec
+                norm_d = float(np.linalg.norm(dv))
+                if norm_d == 0.0:
+                    continue
+            sim = float(np.dot(q_vec, dv) / (norm_q * norm_d))
+            scores_list.append((doc_id, sim))
+        return scores_list
+
+    def _knn_inverted(self, q_vec: np.ndarray, norm_q: float) -> List[Tuple[Union[int, str], float]]:
+        if not self.inverted:
+            return []
+        scores: Dict[Union[int, str], float] = {}
+        nz = np.nonzero(q_vec)[0]
+        for idx in nz:
+            wq = float(q_vec[idx])
+            for doc_id, wd in self.inverted.get(int(idx), []):
+                scores[doc_id] = scores.get(doc_id, 0.0) + wq * float(wd)
+        scores_list: List[Tuple[Union[int, str], float]] = []
+        for doc_id, dot in scores.items():
+            tfidf_vec = self.tfidf_vectors.get(doc_id)
+            if tfidf_vec is None or (np.linalg.norm(tfidf_vec) == 0.0):
+                tfidf_vec = self.vectors.get(doc_id)
+            norm_d = float(np.linalg.norm(tfidf_vec)) if tfidf_vec is not None else 0.0
+            if norm_d == 0.0 or dot == 0.0:
+                continue
+            scores_list.append((doc_id, dot / (norm_q * norm_d)))
+        return scores_list
+
+    def knn(self, img_path: str, k: int = 5, use_inverted: bool = True) -> List[Union[int, str]]:
         self._ensure_loaded()
         if not self.vectors:
             return []
@@ -197,26 +294,29 @@ class BoVWFile:
         except Exception:
             return []
 
-        if self.idf is not None and self.idf.shape[0] == q_vec.shape[0]:
-            q_vec = q_vec * self.idf
+        # Asegurar tfidf + invertido
+        self._ensure_tfidf_and_inverted()
 
-        norm_q = float(np.linalg.norm(q_vec))
+        if self.idf is not None and self.idf.shape[0] == q_vec.shape[0]:
+            q_vec_idf = q_vec * self.idf
+            norm_q = float(np.linalg.norm(q_vec_idf))
+            if norm_q > 0:
+                q_vec = q_vec_idf
+            else:
+                norm_q = float(np.linalg.norm(q_vec))
+        else:
+            norm_q = float(np.linalg.norm(q_vec))
         if norm_q == 0.0:
             return []
 
-        scores: List[Tuple[Union[int, str], float]] = []
-        for doc_id, vec in self.vectors.items():
-            dv = vec
-            if self.idf is not None and self.idf.shape[0] == dv.shape[0]:
-                dv = dv * self.idf
-            norm_d = float(np.linalg.norm(dv))
-            if norm_d == 0.0:
-                continue
-            sim = float(np.dot(q_vec, dv) / (norm_q * norm_d))
-            scores.append((doc_id, sim))
+        # kNN usando índice invertido si está disponible (o secuencial si no)
+        if use_inverted and self.inverted:
+            scores_list = self._knn_inverted(q_vec, norm_q)
+        else:
+            scores_list = self._knn_dense(q_vec, norm_q)
 
-        scores.sort(key=lambda x: x[1], reverse=True)
-        top = [sid for sid, _ in scores[:k]]
+        scores_list.sort(key=lambda x: x[1], reverse=True)
+        top = [sid for sid, _ in scores_list[:k]]
         # devolver siempre la PK si la tenemos en doc_map
         out = []
         for did in top:

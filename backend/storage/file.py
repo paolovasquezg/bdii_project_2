@@ -849,16 +849,23 @@ class File:
                 return []
 
         # --- BoVW (imágenes) nuevo ---
-        if kind == "bovw":
+        if kind.startswith("bovw"):
             try:
                 img_path = params.get("img_path") or params.get("query_image_path")
+                if not img_path:
+                    # fallback: último upload vía endpoint
+                    img_path = os.getenv("BD2_LAST_UPLOAD_PATH")
                 k = int(params.get("k") or 8)
                 if not img_path:
                     self.last_io = self.io_get();
                     return []
 
+                use_inverted = params.get("use_inverted")
+                if use_inverted is None:
+                    use_inverted = (kind == "bovw-inverted")
+
                 bv = self._make_bovw(field, reuse_cached=True)
-                pks = bv.knn(img_path, k)
+                pks = bv.knn(img_path, k, use_inverted=use_inverted)
                 # Resolver filas por PK (consistente con _bridge_from_rtree)
                 rows = []
                 for pkval in pks:

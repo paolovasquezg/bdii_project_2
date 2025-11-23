@@ -189,6 +189,8 @@ def _canon_index_kind(method: str) -> str:
         return "hash"
     if m in ("heap",):
         return "heap"
+    if m in ("bovw-inverted","bovwinverted","bovw_inv"):
+        return "bovw-inverted"
     if m in ("bovw","bow","visual","ivf","img","image"):
         return "bovw"
     if m in ("invtext"):
@@ -199,6 +201,8 @@ def _filename_token(method: str) -> str:
     k = _canon_index_kind(method)
     if k == "bplus":
         return "bplus"
+    if k.startswith("bovw"):
+        return "bovw"
     return k
 
 
@@ -411,7 +415,7 @@ def create_index(table: str, column: str, method: str):
     kind  = _canon_index_kind(method)
     token = _filename_token(method)
 
-    if kind == "bovw":
+    if kind.startswith("bovw"):
         import json, shutil
         pk_name = _find_pk_name(relation)
         if not pk_name:
@@ -479,7 +483,7 @@ def create_index(table: str, column: str, method: str):
                 shutil.rmtree(base_dir, ignore_errors=True)
             shutil.move(str(tmp_dir), str(base_dir))
 
-            indexes[column] = {"index": "bovw", "filename": str(base_dir)}
+            indexes[column] = {"index": kind, "filename": str(base_dir)}
             put_json(str(meta), [relation, indexes])
 
         except Exception as e:

@@ -56,24 +56,26 @@ class InvertedTextFile:
         vocab_path = os.path.join(self.base_dir, "vocab.json")
         with open(vocab_path, "w", encoding="utf-8") as f:
             json.dump(sorted(self.vocab.keys()), f, ensure_ascii=False)
+        self.write_count += 1
 
         idf_path = os.path.join(self.base_dir, "idf.json")
         with open(idf_path, "w", encoding="utf-8") as f:
             json.dump(self.idf, f, ensure_ascii=False)
+        self.write_count += 1
 
         postings_path = os.path.join(self.base_dir, "postings.jsonl")
         with open(postings_path, "w", encoding="utf-8") as f:
             for term in sorted(self.postings.keys()):
                 json.dump({"term": term, "postings": self.postings[term]}, f, ensure_ascii=False)
                 f.write("\n")
+                self.write_count += 1
 
         doc_map_path = os.path.join(self.base_dir, "doc_map.json")
         with open(doc_map_path, "w", encoding="utf-8") as f:
             # serializar claves como str
             jmap = {str(k): v for k, v in self.doc_map.items()}
             json.dump(jmap, f, ensure_ascii=False)
-
-        self.write_count += 4
+        self.write_count += 1
 
     def _load_if_exists(self):
         if self._loaded:
@@ -84,13 +86,13 @@ class InvertedTextFile:
             with open(vocab_path, "r", encoding="utf-8") as f:
                 for t in json.load(f) or []:
                     self.vocab[str(t)] = True
-            self.read_count += 1
+            self.read_count += 1  # vocab
 
         idf_path = os.path.join(self.base_dir, "idf.json")
         if os.path.exists(idf_path):
             with open(idf_path, "r", encoding="utf-8") as f:
                 self.idf = {str(k): float(v) for k, v in (json.load(f) or {}).items()}
-            self.read_count += 1
+            self.read_count += 1  # idf
 
         postings_path = os.path.join(self.base_dir, "postings.jsonl")
         if os.path.exists(postings_path):
@@ -104,7 +106,7 @@ class InvertedTextFile:
                             self.postings[str(term)] = {str(k): int(v) for k, v in p.items()}
                     except Exception:
                         continue
-            self.read_count += 1
+            self.read_count += 1  # postings
 
         doc_map_path = os.path.join(self.base_dir, "doc_map.json")
         if os.path.exists(doc_map_path):
@@ -120,7 +122,7 @@ class InvertedTextFile:
                         self.doc_map[dk] = v
                 except Exception:
                     self.doc_map = {}
-            self.read_count += 1
+            self.read_count += 1  # doc_map
 
         # reconstruir vectores (no persiste)
         if self.doc_map:
@@ -278,6 +280,8 @@ class InvertedTextFile:
             if dot == 0.0:
                 continue
             scores.append((doc_id, dot / (norm_q * norm_d)))
+            # Lectura lógica de postings/doc_vectors
+            self.read_count += 1
 
         scores.sort(key=lambda x: x[1], reverse=True)
         return [sid for sid, _ in scores[:k]]

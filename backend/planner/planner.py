@@ -162,7 +162,8 @@ class Planner:
                             "table": table,
                             "field": where["ident"],
                             "min": where["lo"],
-                            "max": where["hi"]
+                            "max": where["hi"],
+                            "columns": cols
                         })
 
                     # 2) Igualdad (= o ==)
@@ -171,17 +172,19 @@ class Planner:
                             "action": "search",
                             "table": table,
                             "field": where["left"],
-                            "value": where["right"]
+                            "value": where["right"],
+                            "columns": cols
                         })
 
                     # 3) IN lista
                     elif "ident" in where and "items" in where:
-                        plans.append({
-                            "action": "search_in",
-                            "table": table,
-                            "field": where["ident"],
-                            "items": where["items"]
-                        })
+                            plans.append({
+                                "action": "search_in",
+                                "table": table,
+                                "field": where["ident"],
+                                "items": where["items"],
+                                "columns": cols
+                            })
 
                     # 4) GeoWithin (POINT, r)
                     elif {"ident","center","radius"} <= set(where.keys()):
@@ -223,7 +226,8 @@ class Planner:
                             "field": where["ident"],
                             "img_path": where["img_path"],
                             "k": k_eff,
-                            "post_filter": None
+                            "post_filter": None,
+                            "columns": cols
                         })
 
                     elif {"ident", "query_text", "k"} <= set(where.keys()):
@@ -237,7 +241,8 @@ class Planner:
                             "field": where["ident"],  # ej. 'content' o 'title'
                             "query_text": where["query_text"],
                             "k": k_eff,
-                            "post_filter": None
+                            "post_filter": None,
+                            "columns": cols
                         })
 
                     # 5) AND entre (BETWEEN) y (=) en cualquier orden -> range + post_filter

@@ -405,24 +405,26 @@ class File:
 
         record = self._coerce_types(params["record"])
         record["deleted"] = False
+        skip_dup_check = bool(params.get("skip_unique_check"))
 
         # -------- PRE-CHEQUEO DE DUPLICADOS (PK/UNIQUE) --------
-        try:
-            unique_fields = []
-            for col, spec in self.relation.items():
-                if isinstance(spec, dict) and (spec.get("key") in ("primary", "unique")):
-                    unique_fields.append(col)
-            for u in unique_fields:
-                if u not in record: continue
-                existing = self.search({"op": "search", "field": u, "value": record[u]}) or []
-                if existing:
-                    # No insertar nada: el executor reporta DUPLICATE_KEY
-                    self.index_log("precheck", "meta", u, "duplicate")
-                    self.last_io = self.io_get()
-                    return []
-        except Exception:
-            # si algo falla aquí, seguimos y dejamos que el primario lo resuelva
-            pass
+        if not skip_dup_check:
+            try:
+                unique_fields = []
+                for col, spec in self.relation.items():
+                    if isinstance(spec, dict) and (spec.get("key") in ("primary", "unique")):
+                        unique_fields.append(col)
+                for u in unique_fields:
+                    if u not in record: continue
+                    existing = self.search({"op": "search", "field": u, "value": record[u]}) or []
+                    if existing:
+                        # No insertar nada: el executor reporta DUPLICATE_KEY
+                        self.index_log("precheck", "meta", u, "duplicate")
+                        self.last_io = self.io_get()
+                        return []
+            except Exception:
+                # si algo falla aquí, seguimos y dejamos que el primario lo resuelva
+                pass
 
         additional = {"key": None, "unique": []}
         for index in self.indexes:
@@ -1161,30 +1163,41 @@ class File:
                 self.last_io = self.io_get()
                 return []
         elif params["op"] == "import_csv":
-            path = params["path"]
+            import os as _os
+            path = _os.path.abspath(params["path"])
+            if not _os.path.exists(path):
+                raise FileNotFoundError(f"CSV no encontrado: {path}")
             all_recs = []
             with open(path, newline="", encoding="utf-8") as f:
                 r = csv.DictReader(f)
                 for row in r:
                     rec = {}
                     for col, spec in self.relation.items():
-                        if col not in row: continue
+                        if col not in row:
+                            continue
                         v = row[col]
-                        if isinstance(v, str) and v.startswith("[") and v.endswith("]"):
-                            try: v = _json.loads(v)
-                            except Exception: pass
                         t = (spec.get("type") or "").lower()
+                        if isinstance(v, str):
+                            v = v.strip()
+                            # JSON-like (para listas/coords)
+                            if v.startswith("[") and v.endswith("]"):
+                                try:
+                                    v = _json.loads(v)
+                                except Exception:
+                                    pass
                         if v == "" or v is None:
                             v = None
-                        elif t in ("int", "i"):
+                        elif t in ("int", "i", "integer"):
                             v = int(v)
                         elif t in ("float", "real", "f", "double"):
                             v = float(v)
+                        elif t in ("bool", "boolean", "?"):
+                            v = str(v).lower() in ("1", "true", "t", "yes", "y")
                         rec[col] = v
                     all_recs.append(rec)
             # Insert all at once (cached rtrees will accumulate across calls)
             for rec in all_recs:
-                self.insert({"record": rec})
+                self.insert({"record": rec, "skip_unique_check": True})
             # Close all cached rtrees to persist headers
             self._close_cached_rtrees()
             self._close_cached_invtext()

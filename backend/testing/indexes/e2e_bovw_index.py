@@ -18,10 +18,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 # Engine (layout dual por si tu pkg path difiere)
-try:
-    from backend.engine.engine import Engine
-except Exception:
-    from engine import Engine  # type: ignore
+from backend.engine.engine import Engine
 
 # BoVW (import dual)
 try:

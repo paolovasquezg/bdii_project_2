@@ -111,9 +111,13 @@ class AudioStorage:
 
     @staticmethod
     def vector_from_path(path: str | Path, dim: int = 32) -> np.ndarray:
-        """Vector TF (pseudo) determinístico a partir de la ruta."""
+        """Vector TF (pseudo) determinístico a partir de la ruta.
+        Usamos sólo el nombre del archivo para que el mismo audio en otra carpeta
+        genere el mismo vector (útil para uploads vs. dataset base).
+        """
         p = Path(path)
-        seed = int.from_bytes(p.as_posix().encode("utf-8")[:8], "little", signed=False)
+        token = p.name or p.as_posix()
+        seed = int.from_bytes(token.encode("utf-8")[:8], "little", signed=False)
         rng = np.random.default_rng(seed)
         return np.abs(rng.standard_normal(dim))
     
@@ -221,16 +225,35 @@ class AudioStorage:
         audio_ids = []
 
         for record in self.scan():
-            vectors.append(record.tfidf_vector)
+            # Recalcular vector para asegurar consistencia (nombre/archivo vs ruta)
+            try:
+                dim = len(record.tfidf_vector) if hasattr(record.tfidf_vector, "__len__") else 32
+                vec = self.vector_from_path(record.file_path, dim=dim)
+                record.tfidf_vector = vec
+            except Exception:
+                vec = record.tfidf_vector
+
+            vectors.append(vec)
             audio_ids.append(record.audio_id)
-            
+
             # Actualizar caché
-            self._vector_cache[record.audio_id] = record.tfidf_vector
+            self._vector_cache[record.audio_id] = vec
             self._metadata_cache[record.audio_id] = {
                 'file_name': record.file_name,
                 'file_path': record.file_path
             }
-        
+
+        if not vectors:
+            print("⚠️  No hay audios para indexar; se crea índice vacío.")
+            self._id_order = []
+            self.index_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                with self.meta_path.open("w", encoding="utf-8") as f:
+                    json.dump({"id_order": []}, f, ensure_ascii=False)
+            except Exception:
+                pass
+            return
+
         print(f"   Leídos {len(vectors)} vectores del Sequential File")
 
         # 2. Construir índice
@@ -296,6 +319,9 @@ class AudioStorage:
         
         # Leer TODOS los registros del Sequential File
         for record in self.scan():
+            # asegurar vector coherente
+            if not hasattr(record.tfidf_vector, "__len__") or len(record.tfidf_vector) == 0:
+                record.tfidf_vector = self.vector_from_path(record.file_path)
             sim = self._cosine_similarity(query_vector, record.tfidf_vector)
             
             # Mantener top-k usando heap (min-heap)

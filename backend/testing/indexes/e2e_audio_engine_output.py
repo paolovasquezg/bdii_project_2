@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 Muestra el JSON devuelto por Engine.run para un kNN de audio.
-- Usa audios reales de /home/bianca/Downloads/fma_small (hasta 500).
-- Crea tabla, inserta via SQL, crea índice USING audio-inverted.
+- Usa audios reales de DATA_DIR/fma_small (hasta 500).
+- Crea tabla, inserta via SQL, crea índice USING audio.
 - Ejecuta SELECT ... WHERE file_path KNN <-> AUDIO('ruta') LIMIT 5.
 """
 import json
@@ -16,7 +16,9 @@ try:
 except Exception:  # pragma: no cover
     from engine import Engine  # type: ignore
 
-AUDIO_ROOT = Path("/home/bianca/Downloads/fma_small")
+# Directorio de audios; espera un layout fma_small/###/file.mp3 dentro de backend/data
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+AUDIO_ROOT = PROJECT_ROOT / "data" / "fma_small"
 
 
 def vec_from_path(p: Path) -> np.ndarray:
@@ -56,14 +58,16 @@ def main():
             f"VALUES ({i},'{p.name}','{p}','{json.dumps(v)}');"
         )
 
-    eng.run(f"CREATE INDEX ON {tbl}(file_name) USING audio-inverted;")
+    # Índice de audio siempre sobre file_path
+    eng.run(f"CREATE INDEX ON {tbl}(file_path) USING audio;")
 
     sql = f"""
     SELECT audio_id, file_name, file_path
     FROM {tbl}
-    WHERE file_name KNN <-> AUDIO('{files[0]}')
+    WHERE file_path KNN <-> AUDIO('{files[0]}')
     LIMIT 5;
     """
+    print(files[0])
     env = eng.run(sql)
     print(json.dumps(env, indent=2, ensure_ascii=False))
 

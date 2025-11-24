@@ -869,22 +869,30 @@ class File:
                     if ui_flag is not None:
                         use_inverted = bool(ui_flag)
                     else:
-                        use_inverted = (kind == "bovw-inverted")
+                        use_inverted = False
 
                 bv = self._make_bovw(field, reuse_cached=True)
-                pks = bv.knn(img_path, k, use_inverted=use_inverted)
+                res = bv.knn(img_path, k, use_inverted=use_inverted)
+                sim_map = getattr(bv, "last_scores", {}) or {}
+                pks = list(res) if isinstance(res, list) else []
                 # Resolver filas por PK (consistente con _bridge_from_rtree)
                 rows = []
                 for pkval in pks:
                     recs = self.search({"op": "search", "field": self.primary_key, "value": pkval}) or []
                     if not recs: continue
                     r0 = recs[0][0] if isinstance(recs[0], tuple) else recs[0]
-                    if isinstance(r0, dict): rows.append(r0)
+                    if isinstance(r0, dict):
+                        if pkval in sim_map:
+                            r0 = dict(r0)
+                            r0["similarity"] = sim_map[pkval]
+                        rows.append(r0)
                 rows = rows[:k]
                 # IO merge básico
                 try:
-                    self._io["bovw"]["read"] += getattr(bv, "read_count", 0)
-                except:
+                    rcount = getattr(bv, "read_count", 0) or len(pks)
+                    self._io["bovw"]["read_count"] += int(rcount)
+                    self._io["total"]["read_count"] += int(rcount)
+                except Exception:
                     pass
                 self.index_log("secondary", "bovw", field, "knn")
                 self.last_io = self.io_get()
@@ -928,7 +936,7 @@ class File:
                     res, _ = audio_store.knn_sequential(q_vec, k)
 
                 rows = []
-                for r in res:
+                for r in res or []:
                     aid = r.get("audio_id")
                     if aid is None:
                         continue
@@ -936,8 +944,17 @@ class File:
                     if recs:
                         r0 = recs[0][0] if isinstance(recs[0], tuple) else recs[0]
                         if isinstance(r0, dict):
+                            r0 = dict(r0)
+                            if "similarity" in r:
+                                r0["similarity"] = r.get("similarity")
                             rows.append(r0)
                 rows = rows[:k]
+                try:
+                    rcount = len(res or [])
+                    self._io["audio"]["read_count"] += int(rcount)
+                    self._io["total"]["read_count"] += int(rcount)
+                except Exception:
+                    pass
 
                 self.index_log("secondary", "audio", field, "knn")
                 self.last_io = self.io_get()
@@ -955,7 +972,9 @@ class File:
                     return []
 
                 inv = self._make_invtext(field, reuse_cached=True)
-                doc_ids = inv.knn(q, k) or []
+                raw_doc_ids = inv.knn(q, k) or []
+                sim_map = getattr(inv, "last_scores", {}) or {}
+                doc_ids = list(raw_doc_ids)
 
                 # asegúrate de tener doc_map cargado
                 try:
@@ -980,7 +999,14 @@ class File:
                         rrs = self.search({"op": "search", "field": self.primary_key, "value": pkval}) or []
                         if rrs:
                             r0 = rrs[0][0] if isinstance(rrs[0], tuple) else rrs[0]
-                            if isinstance(r0, dict): rows.append(r0)
+                            if isinstance(r0, dict):
+                                sim = sim_map.get(di) if isinstance(sim_map, dict) else None
+                                if sim is None:
+                                    sim = sim_map.get(pkval, None) if isinstance(sim_map, dict) else None
+                                if sim is not None:
+                                    r0 = dict(r0)
+                                    r0["similarity"] = sim
+                                rows.append(r0)
 
                 # 2) Para los que quedaron, intenta por POS si existe
                 if len(rows) < len(doc_ids) and data_filename:
@@ -993,10 +1019,27 @@ class File:
                     if pos_list:
                         hf = HeapFile(data_filename)
                         alt = hf.search_by_pos(pos_list) or []
-                        if alt: rows.extend(alt)
+                        if alt:
+                            for row in alt:
+                                if isinstance(row, (list, tuple)) and row:
+                                    row = row[0]
+                                if isinstance(row, dict):
+                                    sim = sim_map.get(row.get(self.primary_key)) if isinstance(sim_map, dict) else None
+                                    if sim is None and isinstance(sim_map, dict) and pos_list:
+                                        sim = sim_map.get(di)
+                                    if sim is not None:
+                                        row = dict(row)
+                                        row["similarity"] = sim
+                                    rows.append(row)
                         self.io_merge(hf, "heap")
 
                 rows = rows[:k]
+                try:
+                    rcount = len(doc_ids)
+                    self._io["invtext"]["read_count"] += int(rcount)
+                    self._io["total"]["read_count"] += int(rcount)
+                except Exception:
+                    pass
                 try:
                     self.io_merge(inv, "invtext")
                 except:

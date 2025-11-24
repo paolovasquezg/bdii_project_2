@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 E2E • Audio (índice invertido de vectores TF-IDF) usando archivos reales.
-- Toma audios de /home/bianca/Downloads/fma_small (hasta 6).
+- Toma audios de DATA_DIR/fma_small (hasta 6).
 - Inserta vía SQL, crea índice USING audio.
 - Ejecuta kNN con AudioStorage (sin usar File.knn).
 """
@@ -19,7 +19,8 @@ except Exception:  # pragma: no cover
     from storage.audio import AudioStorage, AudioRecord  # type: ignore
 
 
-AUDIO_ROOT = Path("/home/bianca/Downloads/fma_small")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+AUDIO_ROOT = PROJECT_ROOT / "data" / "fma_small"
 
 
 def vec_from_path(p: Path, dim: int = 16) -> np.ndarray:
@@ -67,7 +68,7 @@ def main() -> int:
                 f"VALUES ({v[0]},'{v[1]}','{v[2]}','{v[3]}');"
             )
 
-        res_idx = eng.run(f"CREATE INDEX ON {tbl}(tfidf_vector) USING audio;")
+        res_idx = eng.run(f"CREATE INDEX ON {tbl}(file_path) USING audio;")
         if not res_idx.get("ok", False):
             print(f"✗ create index audio ({pk})")
             ok_all = False

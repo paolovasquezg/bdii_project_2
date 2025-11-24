@@ -54,6 +54,7 @@ def test_bovw_knn_indexed_vs_sequential(tmp_path: Path):
     for i, p in enumerate(imgs, start=1):
         eng.run(f"INSERT INTO img_knn_ops(id,title,image_path) VALUES ({i}, 'img{i}', '{p}');")
 
+    # Índice sobre file_path (unificamos criterio con audio)
     _assert_ok(eng.run("CREATE INDEX ON img_knn_ops(image_path) USING bovw;"), "create index")
 
     # 2) KNN indexado
@@ -81,4 +82,3 @@ def test_bovw_knn_indexed_vs_sequential(tmp_path: Path):
 
     # Log rápido por si se ejecuta standalone
     print(json.dumps({"indexed": data_idx, "non_indexed": data_seq}, indent=2))
-

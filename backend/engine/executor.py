@@ -621,6 +621,20 @@ class Executor:
                             if "use_indexed" in where:
                                 payload["use_indexed"] = where.get("use_indexed")
                             rows = F.execute(payload) or []
+                            # si hay similitud, inclúyela aunque no esté en columns
+                            cols_knn = cols
+                            if rows and cols is not None:
+                                if any(isinstance(r, dict) and "similarity" in r for r in rows):
+                                    cols_knn = list(cols) + (["similarity"] if "similarity" not in cols else [])
+                            # proyección manual para no perder similarity
+                            if cols_knn:
+                                norm = []
+                                for r in rows:
+                                    if isinstance(r, tuple) and len(r) >= 1:
+                                        r = r[0]
+                                    if isinstance(r, dict):
+                                        norm.append(_project_row(r, cols_knn))
+                                rows = norm
                             _emit_ok(rows)
                         else:
                             results.append(err_result("select", "UNSUPPORTED_SELECT",
@@ -641,6 +655,10 @@ class Executor:
                             rows = [r for r in rows if isinstance(r, dict) and r.get(pf["field"]) == pf["value"]]
                         # proyección de columnas si corresponde
                         if cols:
+                            # si hay similitud en los rows y no está en columns, adjúntala
+                            if isinstance(rows, list) and any(isinstance(r, dict) and "similarity" in r for r in rows):
+                                if "similarity" not in cols:
+                                    cols = list(cols) + ["similarity"]
                             norm = []
                             for r in rows:
                                 if isinstance(r, tuple) and len(r) >= 1:

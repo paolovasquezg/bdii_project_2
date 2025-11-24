@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react"
-import { Database, Play, Table2, CheckCircle, AlertCircle, ChevronRight, ChevronDown, X } from "lucide-react"
+import React, { useEffect, useMemo, useState } from "react"
+import { Database, Play, Table2, CheckCircle, AlertCircle, ChevronRight, ChevronDown, X, Upload, Wand2 } from "lucide-react"
 import { Button } from "../src/components/button.tsx"
 import { Card } from "../src/components/card.tsx"
 import { ScrollArea } from "../src/components/scroll.tsx"
-import { loadTables, execQuery } from "./data/data"
+import { loadTables, execQuery, uploadMedia } from "./data/data"
 
 const SQLQueryInterface = () => {
+  const apiBase = (import.meta.env.VITE_API_URL as string | undefined) || "http://127.0.0.1:8000"
   const [query, setQuery] = useState("")
   const [results, setResults] = useState<any[]>([])
   const [isExecuting, setIsExecuting] = useState(false)
@@ -20,35 +21,55 @@ const SQLQueryInterface = () => {
   const [lastPlan, setLastPlan] = useState<any | null>(null)
   const [showIO, setShowIO] = useState(false)
   const [showPlan, setShowPlan] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [uploadPath, setUploadPath] = useState<string>("")
+  const [uploadMsg, setUploadMsg] = useState<string>("")
+  const [uploadError, setUploadError] = useState<string>("")
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [lastResult, setLastResult] = useState<any | null>(null)
 
   const executeQuery = async () => {
     setIsExecuting(true)
     seterror(false)
     setsuccess(false)
     const response = await execQuery({ content: query })
+    console.log("Query response:", response)
     const tables = await loadTables()
-    if (response.success && tables.success) {
+
+    if (response.success) {
       if (response.data.ok) {
-        const first = response.data.results?.[0] || {}
-        setResults(first?.data || [])
+        const first = (response.data.results && response.data.results[0]) || {}
+        const dataRows = Array.isArray(first?.data) ? first.data : []
+        setResults(dataRows)
         setLastIO(first?.meta?.io || null)
         setLastPlan(first?.plan || null)
+        setLastResult(first || null)
         setmessage(`Executed: ${first?.meta?.time_ms ?? response.data?.stats?.time_ms ?? ""} ms`)
         setsuccess(true)
-        set_tables(tables.data)
       } else {
-        setmessage(`Executed: ${response.data["stats"]["time_ms"]} ms
-            Error: ${response.data.results[0]["error"]["message"]}`)
+        setmessage(
+          `Executed: ${response.data?.stats?.time_ms ?? ""} ms\n` +
+            `Error: ${response.data.results?.[0]?.error?.message || "Error"}`
+        )
         seterror(true)
         setLastIO(null)
         setLastPlan(null)
+        setLastResult(null)
+        setResults([])
       }
     } else {
       seterror(true)
       setmessage("Ocurrió un error, inténtelo de nuevo")
       setLastIO(null)
       setLastPlan(null)
+      setLastResult(null)
+      setResults([])
     }
+
+    if (tables.success) {
+      set_tables(tables.data)
+    }
+
     setIsExecuting(false)
   }
 
@@ -72,6 +93,63 @@ const SQLQueryInterface = () => {
       if (names.length > 0) setSelectedTable(names[0])
     }
   }, [tables, selectedTable])
+
+  const isKnn = useMemo(() => {
+    return (lastPlan?.action === "knn") || false
+  }, [lastPlan])
+
+  const similarityRows = useMemo(() => {
+    if (!isKnn || results.length === 0) return []
+    return results.map((r) => {
+      const sim = (r as any).similarity ?? (r as any).score ?? null
+      return { ...r, similarity: sim }
+    })
+  }, [results, isKnn])
+
+  const [viewerSrc, setViewerSrc] = useState<string | null>(null)
+  const [viewerKind, setViewerKind] = useState<"image" | "audio" | null>(null)
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]
+    setSelectedFile(f || null)
+    setUploadError("")
+    setUploadMsg("")
+  }
+
+  const handleUpload = async () => {
+    if (!selectedFile) {
+      setUploadError("Selecciona un archivo primero.")
+      return
+    }
+    setUploading(true)
+    setUploadError("")
+    setUploadMsg("")
+    const resp = await uploadMedia(selectedFile)
+    if (resp.success) {
+      setUploadPath(resp.data?.path || "")
+      setUploadMsg(`Subido: ${resp.data?.path}`)
+    } else {
+      setUploadError(`Error al subir: ${resp.error}`)
+    }
+    setUploading(false)
+  }
+
+  const defaultImgPath = "/home/bianca/Pictures/Screenshots/<archivo>"
+  const defaultAudioPath = "<ruta_de_audio>"
+
+  const insertTemplate = (kind: "img" | "audio" | "text") => {
+    const tbl = selectedTable || "<tabla>"
+    if (kind === "img") {
+      // Si no subiste nada, usa el path local por defecto de Screenshots.
+      const path = uploadPath || defaultImgPath
+      setQuery(`SELECT * FROM ${tbl} WHERE image_path KNN <-> IMG('${path}') LIMIT 5;`)
+    } else if (kind === "audio") {
+      const path = uploadPath || defaultAudioPath
+      setQuery(`SELECT * FROM ${tbl} WHERE file_path KNN <-> AUDIO('${path}') LIMIT 5;`)
+    } else {
+      setQuery(`SELECT * FROM ${tbl} WHERE content KNN <-> 'ruta o texto de consulta' LIMIT 5;`)
+    }
+  }
 
   return (
     <div className="flex h-screen bg-background">
@@ -182,6 +260,43 @@ const SQLQueryInterface = () => {
           <div className="p-4">
             <div className="flex items-start gap-3">
               <div className="flex-1">
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <label className="text-xs font-semibold text-muted-foreground">Subir imagen/audio</label>
+                  <input
+                    type="file"
+                    accept="image/*,audio/*"
+                    onChange={handleFileSelect}
+                    className="text-xs"
+                  />
+                  <Button size="sm" onClick={handleUpload} disabled={uploading}>
+                    <Upload className="h-4 w-4 mr-1" />
+                    {uploading ? "Subiendo..." : "Subir"}
+                  </Button>
+                  {uploadPath && (
+                    <span className="text-xs font-mono text-foreground truncate max-w-xs" title={uploadPath}>
+                      {uploadPath}
+                    </span>
+                  )}
+                </div>
+                {(uploadMsg || uploadError) && (
+                  <p className={`text-xs ${uploadError ? "text-red-500" : "text-emerald-500"}`}>
+                    {uploadError || uploadMsg}
+                  </p>
+                )}
+                <div className="mb-3 flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={() => insertTemplate("img")}>
+                    <Wand2 className="h-4 w-4 mr-1" />
+                    Plantilla IMG KNN
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => insertTemplate("audio")}>
+                    <Wand2 className="h-4 w-4 mr-1" />
+                    Plantilla AUDIO KNN
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => insertTemplate("text")}>
+                    <Wand2 className="h-4 w-4 mr-1" />
+                    Plantilla TEXTO KNN
+                  </Button>
+                </div>
                 <textarea
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
@@ -231,41 +346,105 @@ const SQLQueryInterface = () => {
 
         <div className="flex-1 overflow-hidden p-4">
           {results.length > 0 ? (
-            <Card className="h-full overflow-hidden flex flex-col">
-              <div className="border-b border-border px-4 py-3">
-                <h3 className="text-sm font-semibold text-foreground">Results ({results.length} rows)</h3>
-              </div>
+            <div className="h-full overflow-hidden flex flex-col gap-3">
+              {isKnn && (
+                <Card className="p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-semibold text-foreground">Top-k similitudes</h3>
+                    {uploadPath && <span className="text-xs text-muted-foreground truncate max-w-sm">{uploadPath}</span>}
+                  </div>
+                  {similarityRows.length > 0 ? (
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                      {similarityRows.map((r, i) => (
+                        <div
+                          key={i}
+                          className="rounded-lg border border-border p-3 bg-muted/30 cursor-pointer hover:border-foreground/50"
+                          onClick={() => {
+                            const pImg = (r as any).image_path as string | undefined
+                            const pAud = (r as any).file_path as string | undefined
+                            if (pImg) {
+                                setViewerSrc(pImg)
+                                setViewerKind("image")
+                            } else if (pAud) {
+                                setViewerSrc(pAud)
+                                setViewerKind("audio")
+                            }
+                          }}
+                          title="Click para ver imagen (si hay image_path)"
+                        >
+                          <div className="text-xs text-muted-foreground mb-1">#{i + 1}</div>
+                          <div className="text-sm font-semibold text-foreground">
+                            {(r.title as string) || (r.file_name as string) || (r.content as string) || r.id || "row"}
+                          </div>
+                          {typeof r.similarity !== "undefined" && r.similarity !== null && (
+                            <div className="text-xs text-emerald-500 font-mono">
+                              sim: {Number(r.similarity).toFixed(6)}
+                            </div>
+                          )}
+                          <div className="text-xs text-muted-foreground break-all">
+                            {Object.entries(r)
+                              .filter(([k]) => k !== "similarity")
+                              .slice(0, 3)
+                              .map(([k, v]) => `${k}: ${v}`)
+                              .join(" • ")}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">Sin resultados (0 filas retornadas).</p>
+                  )}
+                </Card>
+              )}
+              <Card className="h-full overflow-hidden flex flex-col">
+                <div className="border-b border-border px-4 py-3">
+                  <h3 className="text-sm font-semibold text-foreground">Results ({results.length} rows)</h3>
+                </div>
 
-              <ScrollArea className="flex-1">
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="sticky top-0 bg-muted/50 backdrop-blur-sm">
-                      <tr>
-                        {Object.keys(results[0]).map((key) => (
-                          <th
-                            key={key}
-                            className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider border-b border-border"
-                          >
-                            {key}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {results.map((row, rowIndex) => (
-                        <tr key={rowIndex} className="border-b border-border hover:bg-accent/50 transition-colors">
-                          {Object.values(row).map((value, colIndex) => (
-                            <td key={colIndex} className="px-4 py-3 text-sm text-foreground font-mono">
-                              {String(value)}
-                            </td>
+                <ScrollArea className="flex-1">
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead className="sticky top-0 bg-muted/50 backdrop-blur-sm">
+                        <tr>
+                          {Object.keys(results[0]).map((key) => (
+                            <th
+                              key={key}
+                              className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider border-b border-border"
+                            >
+                              {key}
+                            </th>
                           ))}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </ScrollArea>
-            </Card>
+                      </thead>
+                      <tbody>
+                        {results.map((row, rowIndex) => (
+                          <tr key={rowIndex} className="border-b border-border hover:bg-accent/50 transition-colors">
+                            {Object.values(row).map((value, colIndex) => (
+                              <td key={colIndex} className="px-4 py-3 text-sm text-foreground font-mono">
+                                {String(value)}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </ScrollArea>
+              </Card>
+            </div>
+          ) : lastResult ? (
+            <div className="h-full flex items-center justify-center">
+              <div className="text-center space-y-2">
+                <Database className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
+                <h3 className="text-lg font-semibold text-foreground">Consulta ejecutada sin filas</h3>
+                <p className="text-sm text-muted-foreground">
+                  {isKnn ? "kNN no devolvió vecinos." : "La consulta no retornó filas."}
+                </p>
+                {isKnn && uploadPath && (
+                  <p className="text-xs text-muted-foreground font-mono break-all">{uploadPath}</p>
+                )}
+              </div>
+            </div>
           ) : (
             <div className="h-full flex items-center justify-center">
               <div className="text-center">
@@ -417,6 +596,57 @@ const SQLQueryInterface = () => {
                   <p className="text-sm text-muted-foreground">No plan available.</p>
                 )}
               </div>
+            </ScrollArea>
+          </Card>
+        </div>
+      )}
+
+      {viewerSrc && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm bg-black/30 p-4"
+          onClick={() => setViewerSrc(null)}
+        >
+          <Card
+            className="w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl bg-white"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="border-b border-border px-6 py-4 flex items-center justify-between shrink-0">
+              <h3 className="text-lg font-semibold text-card-foreground">Previsualización</h3>
+              <Button
+                onClick={() => setViewerSrc(null)}
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 p-0 hover:bg-accent"
+              >
+                <X className="h-4 w-4" />
+                <span className="sr-only">Close</span>
+              </Button>
+            </div>
+            <ScrollArea className="flex-1 p-4">
+              {viewerKind === "image" && (() => {
+                const resolved = viewerSrc.startsWith("http")
+                  ? viewerSrc
+                  : `${apiBase}/file?path=${encodeURIComponent(viewerSrc)}`
+                return (
+                  <img
+                    src={resolved}
+                    alt="preview"
+                    className="max-h-[75vh] mx-auto object-contain border border-border rounded-lg"
+                  />
+                )
+              })()}
+              {viewerKind === "audio" && (() => {
+                const resolved = viewerSrc.startsWith("http")
+                  ? viewerSrc
+                  : `${apiBase}/file?path=${encodeURIComponent(viewerSrc)}`
+                return (
+                  <audio controls className="w-full">
+                    <source src={resolved} />
+                    Tu navegador no soporta audio.
+                  </audio>
+                )
+              })()}
+              <div className="mt-2 text-xs text-muted-foreground break-all text-center font-mono">{viewerSrc}</div>
             </ScrollArea>
           </Card>
         </div>

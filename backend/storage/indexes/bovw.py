@@ -316,12 +316,15 @@ class BoVWFile:
             scores_list = self._knn_dense(q_vec, norm_q)
 
         scores_list.sort(key=lambda x: x[1], reverse=True)
-        top = [sid for sid, _ in scores_list[:k]]
-        # devolver siempre la PK si la tenemos en doc_map
+        top = scores_list[:k]
+        # guardar similitudes para consumidores (ej. File.knn)
+        self.last_scores = {}
         out = []
-        for did in top:
+        for did, sim in top:
             meta = self.doc_map.get(did) or {}
-            out.append(meta.get("pk", did))
+            pk = meta.get("pk", did)
+            self.last_scores[pk] = sim
+            out.append(pk)
         return out
 
     def close(self):

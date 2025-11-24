@@ -284,6 +284,8 @@ class InvertedTextFile:
             self.read_count += 1
 
         scores.sort(key=lambda x: x[1], reverse=True)
+        # guarda last_scores para consumidores que quieran similitud
+        self.last_scores = {sid: sim for sid, sim in scores[:k]}
         return [sid for sid, _ in scores[:k]]
 
     def close(self):

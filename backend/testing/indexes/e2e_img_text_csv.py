@@ -140,7 +140,7 @@ def run_for_pk(pk_method: str, csv_path: Path, imgs: Dict[str, str]) -> bool:
         f"CREATE TABLE {tbl} FROM FILE '{clean}' USING INDEX {pk_method}(id);"
     ), "create table from file")
 
-    assert_ok(run_sql(f"CREATE INDEX ON {tbl}(image_path) USING bovw-inverted;"), "create bovw-inverted")
+    assert_ok(run_sql(f"CREATE INDEX ON {tbl}(image_path) USING bovw;"), "create bovw")
     assert_ok(run_sql(f"CREATE INDEX ON {tbl}(image_text) USING invtext;"), "create invtext")
 
     ok_all = True

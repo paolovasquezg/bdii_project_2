@@ -192,11 +192,11 @@ def _canon_index_kind(method: str) -> str:
     if m in ("bovw","bow","visual","ivf","img","image"):
         return "bovw"
     if m in ("bovw-inverted","bovwinverted","bovw_inv"):
-        return "bovw-inverted"
+        return "bovw"  # normalizar: solo se crea bovw
     if m in ("audio","aud","sound"):
         return "audio"
     if m in ("audio-inverted","audioinv","audio_inv"):
-        return "audio-inverted"
+        return "audio"  # normalizar: solo se crea audio
     if m in ("invtext"):
         return "invtext"
     return m or "heap"

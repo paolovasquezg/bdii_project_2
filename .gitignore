@@ -1,3 +1,35 @@
 .DS_Store
 backend/runtime
-.idea
+
+# Exclude audio files (too large for git)
+data/fma_small/
+*.mp3
+*.wav
+*.flac
+
+# Exclude generated models and data files
+*.pkl
+*.dat
+*.npy
+data/index/
+backend/storage/data/
+backend/backend/
+backend/runtime/files/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE files
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.log

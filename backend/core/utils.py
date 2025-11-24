@@ -37,6 +37,14 @@ def build_format(schema):
             if length <= 0:
                 length = 1
             fmt += f"{length}s"
+        elif t in ("array", "vector"):
+            # Para arrays/vectores, usamos un string binario de longitud fija
+            # El length indica el número de elementos, cada float = 4 bytes
+            if length <= 0:
+                length = 1
+            # Cada float son 4 bytes, así que length * 4 bytes total
+            array_bytes = length * 4
+            fmt += f"{array_bytes}s"
         else:
             raise ValueError(f"Unsupported field type in build_format: {field.get('type')}")
     return fmt

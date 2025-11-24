@@ -10,8 +10,10 @@ data/fma_small/
 # Exclude generated models and data files
 *.pkl
 *.dat
+*.npy
 data/index/
 backend/storage/data/
+backend/backend/
 backend/runtime/files/
 
 # Python cache

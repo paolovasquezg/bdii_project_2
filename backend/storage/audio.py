@@ -5,14 +5,16 @@ backend/storage/audio.py
 Usa Sequential File del P1 (con catálogo) + Índice Invertido del P2
 """
 
-import numpy as np
-from pathlib import Path
-from typing import List, Dict, Tuple
+import json
 import time
 import heapq
+from pathlib import Path
+from typing import List, Dict, Tuple
+
+import numpy as np
 
 # Importar Sequential File del P1
-from backend.storage.indexes.sequential import SeqFile
+from backend.storage.file import File
 
 # Importar índice invertido del P2
 from backend.storage.indexes.inverted import InvertedIndex
@@ -38,22 +40,31 @@ class AudioRecord:
     
     def to_dict(self) -> Dict:
         """Convierte a diccionario para Sequential File"""
+        vec_list = self.tfidf_vector.tolist() if isinstance(self.tfidf_vector, np.ndarray) else self.tfidf_vector
+        vec_str = json.dumps(vec_list)
         return {
             'audio_id': self.audio_id,
             'file_name': self.file_name[:50],  # Truncar a 50 caracteres
             'file_path': self.file_path[:200],  # Truncar a 200 caracteres
-            'tfidf_vector': self.tfidf_vector,  # Array numpy directo - ahora soportado nativamente
+            # Guardamos como string JSON para respetar esquema fijo del SeqFile
+            'tfidf_vector': vec_str,
             'deleted': False  # Campo requerido por Sequential File
         }
     
     @staticmethod
     def from_dict(data: Dict) -> 'AudioRecord':
         """Crea desde diccionario"""
+        raw_vec = data['tfidf_vector']
+        if isinstance(raw_vec, str):
+            try:
+                raw_vec = json.loads(raw_vec)
+            except Exception:
+                pass
         return AudioRecord(
             audio_id=data['audio_id'],
             file_name=data['file_name'],
             file_path=data['file_path'],
-            tfidf_vector=data['tfidf_vector']  # Array numpy directo - ya no necesita deserialización
+            tfidf_vector=np.array(raw_vec, dtype=float)  # recrear np.array
         )
 
 
@@ -70,40 +81,41 @@ class AudioStorage:
         Args:
             table_name: Nombre de la tabla registrada en el catálogo
         """
-        # Obtener ruta del archivo desde el catálogo
-        self.data_file = Path(get_filename(table_name))
-        
-        # Verificar que el archivo existe
-        if not self.data_file.exists():
-            raise FileNotFoundError(
-                f"Archivo no encontrado: {self.data_file}\n"
-                f"   Ejecuta primero: python scripts.py/register_table_catalog.py"
-            )
-        
-        # Inicializar Sequential File del P1
-        # El schema se lee del catálogo automáticamente
-        try:
-            self.sequential_file = SeqFile(str(self.data_file))
-            print(f"✅ Sequential File inicializado: {self.data_file}")
-        except Exception as e:
-            raise RuntimeError(
-                f"Error al inicializar Sequential File: {e}\n"
-                f"   Verifica que la tabla esté registrada en el catálogo\n"
-                f"   Ejecuta: python scripts.py/register_table_catalog.py"
-            )
+        # Inspeccionar metadatos vía File wrapper (soporta heap/sequential/etc)
+        self.file = File(table_name)
+        self.data_file = Path(self.file.filename)
+
+        # No usamos SeqFile directamente; delegamos a File para todos los PK
+        self.sequential_file = None
+        print(f"ℹ️  Tabla {table_name} usando File wrapper (pk={self.file.indexes.get('primary',{}).get('index')})")
         
         # Índice Invertido para búsqueda rápida
         self.inverted_index = InvertedIndex()
-        
+
         # Caché en memoria para eficiencia
         self._vector_cache = {}
         self._metadata_cache = {}
+        self._id_order: List[int] = []  # pos -> audio_id
+
+        # Ruta de índice en runtime
+        self.index_dir = Path(__file__).resolve().parents[1] / "runtime" / "audio" / table_name
+        self.index_dir.mkdir(parents=True, exist_ok=True)
+        self.index_path = self.index_dir / "inverted_index.pkl"
+        self.meta_path = self.index_dir / "inverted_index.meta.json"
     
     def clear(self) -> None:
         """Limpia el cache y fuerza recarga desde Sequential File"""
         self._vector_cache.clear()
         self._metadata_cache.clear()
         print("✅ Cache limpiado")
+
+    @staticmethod
+    def vector_from_path(path: str | Path, dim: int = 32) -> np.ndarray:
+        """Vector TF (pseudo) determinístico a partir de la ruta."""
+        p = Path(path)
+        seed = int.from_bytes(p.as_posix().encode("utf-8")[:8], "little", signed=False)
+        rng = np.random.default_rng(seed)
+        return np.abs(rng.standard_normal(dim))
     
     def insert(self, audio_record: AudioRecord) -> bool:
         """
@@ -116,17 +128,16 @@ class AudioStorage:
             True si se insertó correctamente
         """
         try:
-            # Preparar registro para Sequential File
             record_dict = audio_record.to_dict()
-            
-            # Preparar parámetros adicionales para Sequential File
-            additional = {
-                "key": "audio_id",  # Campo clave principal
-                "unique": ["audio_id"]  # Campos únicos 
-            }
-            
-            # Insertar en Sequential File (P1)
-            self.sequential_file.insert(record_dict, additional)
+
+            if self.sequential_file:
+                additional = {"key": "audio_id", "unique": ["audio_id"]}
+                self.sequential_file.insert(record_dict, additional)
+            else:
+                # File wrapper (respeta índice primario real)
+                if "deleted" in record_dict:
+                    record_dict = {k: v for k, v in record_dict.items() if k != "deleted"}
+                self.file.execute({"op": "insert", "record": record_dict})
             
             # Actualizar caché
             self._vector_cache[audio_record.audio_id] = audio_record.tfidf_vector
@@ -154,26 +165,49 @@ class AudioStorage:
             AudioRecord o None
         """
         try:
-            # Buscar en Sequential File (P1)
-            data = self.sequential_file.search(audio_id)
-            
+            if self.sequential_file:
+                additional = {"key": "audio_id", "value": audio_id, "unique": True}
+                data = self.sequential_file.search(additional, same_key=True)
+            else:
+                data = self.file.search({"op": "search", "field": "audio_id", "value": audio_id})
+
             if data:
-                return AudioRecord.from_dict(data)
+                # SeqFile.search devuelve lista de dicts
+                first = data[0] if isinstance(data, list) else data
+                if isinstance(first, tuple) and len(first) >= 1:
+                    first = first[0]
+                if isinstance(first, dict):
+                    return AudioRecord.from_dict(first)
             return None
-            
+
         except Exception as e:
             print(f"❌ Error al buscar audio {audio_id}: {e}")
             return None
     
     def scan(self):
         """Itera sobre todos los registros del Sequential File"""
-        # Usar el método get_all del Sequential File (P1)
-        all_records = self.sequential_file.get_all()
+        if self.sequential_file:
+            all_records = self.sequential_file.get_all()
+        else:
+            all_records = self.file.get_all()
         
-        for record_dict in all_records:
-            # Agregar el campo deleted si no existe (get_all lo elimina)
+        for rec in all_records:
+            record_dict = rec
+            if isinstance(rec, tuple) and len(rec) >= 1:
+                record_dict = rec[0]
+            if not isinstance(record_dict, dict):
+                continue
             record_dict['deleted'] = False
-            audio_record = AudioRecord.from_dict(record_dict)
+            try:
+                audio_record = AudioRecord.from_dict(record_dict)
+            except Exception:
+                continue
+            # refresca caches para uso inmediato en kNN secuencial
+            self._vector_cache[audio_record.audio_id] = audio_record.tfidf_vector
+            self._metadata_cache[audio_record.audio_id] = {
+                'file_name': audio_record.file_name,
+                'file_path': audio_record.file_path
+            }
             yield audio_record
     
     def build_inverted_index(self) -> None:
@@ -185,7 +219,7 @@ class AudioStorage:
         # 1. Leer todos los vectores del Sequential File
         vectors = []
         audio_ids = []
-        
+
         for record in self.scan():
             vectors.append(record.tfidf_vector)
             audio_ids.append(record.audio_id)
@@ -198,26 +232,35 @@ class AudioStorage:
             }
         
         print(f"   Leídos {len(vectors)} vectores del Sequential File")
-        
+
         # 2. Construir índice
         tfidf_matrix = np.array(vectors)
         self.inverted_index.build(tfidf_matrix)
-        
-        # 3. Guardar índice (en directorio backend/storage/data)
-        index_path = Path(__file__).parent.parent.parent / "backend" / "storage" / "data" / "inverted_index.pkl"
-        index_path.parent.mkdir(parents=True, exist_ok=True)
-        self.inverted_index.save(str(index_path))
-        
-        print(f"✅ Índice invertido guardado: {index_path}")
-    
+        self._id_order = audio_ids
+
+        # 3. Guardar índice + metadatos (runtime/audio)
+        self.index_dir.mkdir(parents=True, exist_ok=True)
+        self.inverted_index.save(str(self.index_path))
+        try:
+            with self.meta_path.open("w", encoding="utf-8") as f:
+                json.dump({"id_order": audio_ids}, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+        print(f"✅ Índice invertido guardado: {self.index_path}")
+
     def load_inverted_index(self) -> None:
         """Carga el índice invertido desde disco"""
-        index_path = Path(__file__).parent.parent.parent / "backend" / "storage" / "data" / "inverted_index.pkl"
-        
-        if not index_path.exists():
-            raise FileNotFoundError(f"Índice no encontrado: {index_path}")
-        
-        self.inverted_index.load(str(index_path))
+        if not self.index_path.exists():
+            raise FileNotFoundError(f"Índice no encontrado: {self.index_path}")
+
+        self.inverted_index.load(str(self.index_path))
+        if self.meta_path.exists():
+            try:
+                meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
+                self._id_order = meta.get("id_order") or []
+            except Exception:
+                self._id_order = []
         
         # Cargar caché desde Sequential File
         record_count = 0
@@ -229,7 +272,7 @@ class AudioStorage:
             }
             record_count += 1
         
-        print(f"✅ Índice cargado: {str(index_path)}")
+        print(f"✅ Índice cargado: {str(self.index_path)}")
         print(f"✅ Sistema cargado: {record_count} audios")
     
     def knn_sequential(
@@ -272,9 +315,9 @@ class AudioStorage:
             results.append({
                 'audio_id': audio_id,
                 'similarity': similarity,
-                **self._metadata_cache[audio_id]
+                **(self._metadata_cache.get(audio_id) or {})
             })
-        
+
         return results, elapsed
     
     def knn_indexed(
@@ -300,7 +343,9 @@ class AudioStorage:
         heap = []
         
         # 3. Calcular similitud solo con candidatos
-        for audio_id in candidates:
+        for pos in candidates:
+            # Mapear posición a audio_id real si existe
+            audio_id = self._id_order[pos] if pos < len(self._id_order) else pos
             if audio_id in self._vector_cache:
                 vector = self._vector_cache[audio_id]
                 sim = self._cosine_similarity(query_vector, vector)

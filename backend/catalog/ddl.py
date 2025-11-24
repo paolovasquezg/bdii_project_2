@@ -189,10 +189,14 @@ def _canon_index_kind(method: str) -> str:
         return "hash"
     if m in ("heap",):
         return "heap"
-    if m in ("bovw-inverted","bovwinverted","bovw_inv"):
-        return "bovw-inverted"
     if m in ("bovw","bow","visual","ivf","img","image"):
         return "bovw"
+    if m in ("bovw-inverted","bovwinverted","bovw_inv"):
+        return "bovw-inverted"
+    if m in ("audio","aud","sound"):
+        return "audio"
+    if m in ("audio-inverted","audioinv","audio_inv"):
+        return "audio-inverted"
     if m in ("invtext"):
         return "invtext"
     return m or "heap"
@@ -573,6 +577,20 @@ def create_index(table: str, column: str, method: str):
                 if hasattr(F, "_close_cached_rtrees"): F._close_cached_rtrees()
             except Exception:
                 pass
+        return
+
+    if kind in ("audio", "audio-inverted"):
+        try:
+            from backend.storage.audio import AudioStorage
+            aud = AudioStorage(table)
+            aud.build_inverted_index()
+            # guardar en metadatos una ruta de índice (aunque AudioStorage la maneja internamente)
+            idx_file = getattr(aud, "index_path", None)
+            if idx_file:
+                indexes[column] = {"index": kind, "filename": str(idx_file)}
+                put_json(str(meta), [relation, indexes])
+        except Exception as e:
+            raise RuntimeError(f"Fallo construyendo audio index ({table}.{column}): {e}")
         return
 
     # ===== Resto (hash/bplus/rtree, etc. como ya tenías) =====

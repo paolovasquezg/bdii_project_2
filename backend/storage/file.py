@@ -43,6 +43,7 @@ class File:
         self._cached_rtree = {}  # {field_name: RTree_wrapper}
         self._cached_bovw = {}  # {field_name: BoVWFile}
         self._invtext_cache = {}
+        # audio usa su propio módulo (no cacheado aquí)
 
     # ------------------------------ IO accounting ------------------------------------ #
 
@@ -57,6 +58,7 @@ class File:
             "rtree": dict(zero),
             "bovw": dict(zero),
             "invtext": dict(zero),
+            "audio": dict(zero),
             "total": dict(zero),
         }
 
@@ -862,7 +864,12 @@ class File:
 
                 use_inverted = params.get("use_inverted")
                 if use_inverted is None:
-                    use_inverted = (kind == "bovw-inverted")
+                    # map de sintaxis: <-> (indexado) vs <-->
+                    ui_flag = params.get("use_indexed")
+                    if ui_flag is not None:
+                        use_inverted = bool(ui_flag)
+                    else:
+                        use_inverted = (kind == "bovw-inverted")
 
                 bv = self._make_bovw(field, reuse_cached=True)
                 pks = bv.knn(img_path, k, use_inverted=use_inverted)
@@ -873,6 +880,7 @@ class File:
                     if not recs: continue
                     r0 = recs[0][0] if isinstance(recs[0], tuple) else recs[0]
                     if isinstance(r0, dict): rows.append(r0)
+                rows = rows[:k]
                 # IO merge básico
                 try:
                     self._io["bovw"]["read"] += getattr(bv, "read_count", 0)
@@ -883,6 +891,59 @@ class File:
                 return rows
             except Exception as e:
                 if DEBUG_IDX: print("[BOVW knn] skip:", e)
+                self.last_io = self.io_get()
+                return []
+        elif kind.startswith("audio"):
+            try:
+                import numpy as _np
+                from backend.storage.audio import AudioStorage
+
+                qv = params.get("query_vector") or params.get("vector")
+                if qv is None and isinstance(params.get("query_text"), str):
+                    try:
+                        qv = _json.loads(params["query_text"])
+                    except Exception:
+                        qv = None
+                if qv is None and params.get("audio_path"):
+                    try:
+                        qv = AudioStorage.vector_from_path(params["audio_path"]).tolist()
+                    except Exception:
+                        qv = None
+                k = int(params.get("k") or 8)
+                if qv is None:
+                    self.last_io = self.io_get()
+                    return []
+                q_vec = _np.array(qv, dtype=float)
+
+                audio_store = AudioStorage(self.table)
+                use_indexed = params.get("use_indexed")
+                use_indexed = True if use_indexed is None else bool(use_indexed)
+                if use_indexed:
+                    try:
+                        audio_store.load_inverted_index()
+                    except Exception:
+                        audio_store.build_inverted_index()
+                    res, _ = audio_store.knn_indexed(q_vec, k)
+                else:
+                    res, _ = audio_store.knn_sequential(q_vec, k)
+
+                rows = []
+                for r in res:
+                    aid = r.get("audio_id")
+                    if aid is None:
+                        continue
+                    recs = self.search({"op": "search", "field": self.primary_key, "value": aid}) or []
+                    if recs:
+                        r0 = recs[0][0] if isinstance(recs[0], tuple) else recs[0]
+                        if isinstance(r0, dict):
+                            rows.append(r0)
+                rows = rows[:k]
+
+                self.index_log("secondary", "audio", field, "knn")
+                self.last_io = self.io_get()
+                return rows
+            except Exception as e:
+                if DEBUG_IDX: print("[AUDIO knn] skip:", e)
                 self.last_io = self.io_get()
                 return []
         elif "invtext" in kind:
@@ -935,6 +996,7 @@ class File:
                         if alt: rows.extend(alt)
                         self.io_merge(hf, "heap")
 
+                rows = rows[:k]
                 try:
                     self.io_merge(inv, "invtext")
                 except:

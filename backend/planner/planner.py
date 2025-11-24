@@ -227,7 +227,23 @@ class Planner:
                             "img_path": where["img_path"],
                             "k": k_eff,
                             "post_filter": None,
-                            "columns": cols
+                            "columns": cols,
+                            **({"use_indexed": where.get("use_indexed")} if "use_indexed" in where else {})
+                        })
+                    elif {"ident", "audio_path", "k"} <= set(where.keys()):
+                        k_eff = int(where["k"])
+                        lim = d.get("limit")
+                        if isinstance(lim, int) and lim > 0:
+                            k_eff = lim
+                        plans.append({
+                            "action": "knn",
+                            "table": table,
+                            "field": where["ident"],
+                            "audio_path": where["audio_path"],
+                            "k": k_eff,
+                            "post_filter": None,
+                            "columns": cols,
+                            **({"use_indexed": where.get("use_indexed")} if "use_indexed" in where else {})
                         })
 
                     elif {"ident", "query_text", "k"} <= set(where.keys()):
@@ -242,7 +258,8 @@ class Planner:
                             "query_text": where["query_text"],
                             "k": k_eff,
                             "post_filter": None,
-                            "columns": cols
+                            "columns": cols,
+                            **({ "use_indexed": where.get("use_indexed")} if "use_indexed" in where else {})
                         })
 
                     # 5) AND entre (BETWEEN) y (=) en cualquier orden -> range + post_filter

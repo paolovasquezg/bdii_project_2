@@ -14,7 +14,7 @@ KEYWORDS = {
     "INT","INTEGER","SMALLINT","BIGINT","FLOAT","REAL","DOUBLE",
     "PRECISION","CHAR","VARCHAR","STRING","BOOL","BOOLEAN",
     "TRUE","FALSE","NULL","LIKE","IN","IS","AS",
-    "FILE","POINT", "KNN", "IMG", "LIMIT",
+    "FILE","POINT", "KNN", "IMG", "AUDIO", "LIMIT",
 }
 
 # operadores que necesitamos en este dialecto
@@ -48,6 +48,11 @@ def _tokenize(sql: str) -> List[Token]:
         if any(sql.startswith(op, i) for op in _TWO_CHAR_OPS):
             out.append(Token("OP", sql[i:i+2], i))
             i += 2
+            continue
+
+        if i + 4 <= n and sql[i:i + 4] == '<-->':
+            out.append(Token('OP', '<-->', i))
+            i += 4
             continue
 
         if i + 3 <= n and sql[i:i + 3] == '<->':
@@ -224,12 +229,14 @@ class KnnImg:
     ident: str           # columna con la ruta/imagen
     img_path: str        # ruta de la query
     k: int
+    use_indexed: bool | None = None
 
 @dataclass
 class KnnText:
     ident: str           # columna con la ruta/imagen
     query_text: str        # ruta de la query
     k: int
+    use_indexed: bool | None = None
 
 # ---------------------------
 # Parser (recursive descent)
@@ -598,16 +605,31 @@ class _Parser:
 
         if self._accept("KW", "KNN"):
             # --- Operador de similitud:  columna <-> RHS ---
+            op_tok = None
             if self._accept("OP", "<->"):
+                op_tok = "<->"
+            elif self._accept("OP", "<-->"):
+                op_tok = "<-->"
+
+            if op_tok:
+                use_indexed = (op_tok == "<->")
                 # Forma explícita: IMG('ruta')
                 if self._accept("KW", "IMG"):
                     self._expect("OP", "(")
                     img_lit = self._parse_literal()
                     self._expect("OP", ")")
                     try:
-                        return KnnImg(ident=ident, img_path=str(img_lit), k=8)
+                        obj = KnnImg(ident=ident, img_path=str(img_lit), k=8, use_indexed=use_indexed)
+                        return asdict(obj)
                     except NameError:
-                        return {"ident": ident, "img_path": str(img_lit), "k": 8}
+                        return {"ident": ident, "img_path": str(img_lit), "k": 8, "use_indexed": use_indexed}
+
+                # AUDIO('ruta')
+                if self._accept("KW", "AUDIO"):
+                    self._expect("OP", "(")
+                    aud_lit = self._parse_literal()
+                    self._expect("OP", ")")
+                    return {"ident": ident, "audio_path": str(aud_lit), "k": 8, "use_indexed": use_indexed}
 
                 # Forma literal: 'algo'  -> si parece imagen, tratamos como imagen; si no, como texto
                 rhs = self._parse_literal()
@@ -615,14 +637,18 @@ class _Parser:
                         ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp"
                 )):
                     try:
-                        return KnnImg(ident=ident, img_path=rhs, k=8)
+                        obj = KnnImg(ident=ident, img_path=rhs, k=8, use_indexed=use_indexed)
+                        return asdict(obj)
                     except NameError:
-                        return {"ident": ident, "img_path": rhs, "k": 8}
+                        return {"ident": ident, "img_path": rhs, "k": 8, "use_indexed": use_indexed}
+                if isinstance(rhs, str) and rhs.lower().endswith((".mp3", ".wav", ".flac", ".ogg")):
+                    return {"ident": ident, "audio_path": rhs, "k": 8, "use_indexed": use_indexed}
                 else:
                     try:
-                        return KnnText(ident=ident, query_text=str(rhs), k=8)
+                        obj = KnnText(ident=ident, query_text=str(rhs), k=8, use_indexed=use_indexed)
+                        return asdict(obj)
                     except NameError:
-                        return {"ident": ident, "query_text": str(rhs), "k": 8}
+                        return {"ident": ident, "query_text": str(rhs), "k": 8, "use_indexed": use_indexed}
 
             center = self._parse_point()  # POINT(x,y)
             self._expect("OP", ",")

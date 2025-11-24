@@ -25,6 +25,7 @@ def ZERO_IO():
         "rtree": dict(z),
         "bovw": dict(z),       # 🔹 nuevo
         "invtext": dict(z),    # 🔹 nuevo
+        "audio": dict(z),
         "total": dict(z),
     }
 # -------- helpers de (de)serialización segura del plan -------- #
@@ -605,16 +606,20 @@ class Executor:
                                               "min": where["lo"], "max": where["hi"]}) or []
                             _emit_ok(rows)
                         elif isinstance(where, dict) and "ident" in where and (
-                                "img_path" in where or "query_text" in where or "point" in where
+                                "img_path" in where or "query_text" in where or "point" in where or "audio_path" in where
                         ):
                             k = int(p.get("limit") or where.get("k") or 10)
                             payload = {"op": "knn", "field": where["ident"], "k": k}
                             if "img_path" in where:
                                 payload["img_path"] = where["img_path"]
+                            if "audio_path" in where:
+                                payload["audio_path"] = where["audio_path"]
                             elif "query_text" in where:
                                 payload["query_text"] = where["query_text"]
                             else:
                                 payload["point"] = where["point"]
+                            if "use_indexed" in where:
+                                payload["use_indexed"] = where.get("use_indexed")
                             rows = F.execute(payload) or []
                             _emit_ok(rows)
                         else:

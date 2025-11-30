@@ -18,10 +18,10 @@ class AcousticCodebook:
     def __init__(self, n_clusters: int = 500, demo_mode: bool = False):
         if demo_mode:
             config = DEMO_CONFIG
-            self.n_clusters = config["n_clusters"]
+            self.n_clusters = n_clusters  # Usar el parámetro pasado, no el del config
             self.max_samples = config["max_samples"]
             self.max_iter = config["max_iter"]
-            print(" MODO DEMO: Configuración optimizada para velocidad")
+            print(f" MODO DEMO: Configuración optimizada para velocidad (K={n_clusters})")
         else:
             config = PROD_CONFIG
             self.n_clusters = n_clusters

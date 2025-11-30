@@ -17,7 +17,7 @@ def register_audios_table():
         "audio_id": {"type": "int"},
         "file_name": {"type": "varchar", "length": 50}, 
         "file_path": {"type": "varchar", "length": 200},
-        "tfidf_vector": {"type": "array", "length": 400},  # Ajustado a K=400
+        "tfidf_vector": {"type": "array", "length": 200},  # Ajustado a K=200
         "deleted": {"type": "bool"}  # Campo requerido por Sequential File
     }
     

@@ -171,9 +171,9 @@ def main():
     print("="*60)
     print(f" Directorio de trabajo: {project_root}")
     
-    # Configuración MÁXIMA CALIDAD (para conseguir Top-1)
+    # Configuración BALANCEADA (mejor balance granularidad/overfitting)
     FMA_DIR = project_root / "data" / "fma_small"
-    K = 400  # Muchos más clusters para máxima granularidad
+    K = 200  # Balance entre granularidad y generalización
     MAX_AUDIOS = 100  # Mantener 100 audios
     DEMO_MODE = True  # Usar configuración optimizada
     

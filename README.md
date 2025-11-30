@@ -14,7 +14,7 @@ flowchart LR
     C --> D[Histogramas TF-IDF]
     D --> E[Indice Invertido]
     E --> F[KNN Similitud Coseno]
-
+```
 
 ---
 

@@ -1,3 +1,5 @@
+# PROYECTO
+
 # Informe Técnico: Motor de Búsqueda Textual (Full-Text Search)
 
 ## 1. Introducción y Diseño del Sistema

@@ -87,7 +87,7 @@ Cuando el sistema recibe una consulta (ej. *"sostenibilidad y finanzas"*), ejecu
 
 3.  **Cálculo de Similitud (Ranking):** Se utiliza un acumulador para sumar los productos punto solo de los documentos recuperados:
    
-    Score(d) += W(t,q) X  W(t,d)
+    Score(d) += W(t,q) x  W(t,d)
 
 5.  **Normalización Final:** Finalmente, aplicamos la fórmula del Coseno dividiendo por las normas pre-calculadas (que ya están en RAM, evitando lecturas adicionales):
    

@@ -11,10 +11,11 @@ Luego, cada imagen se convierte en un **histograma**, donde cada posición indic
 ```mermaid
 
 flowchart LR
-    A[Imágenes] --> B[Extracción de Descriptores<br/>(SIFT u ORB)]
-    B --> C[Clustering Manual<br/>(K-Means)]
-    C --> D[Codebook<br/>(Visual Words)]
-    D --> E[Histogramas BoVW<br/>(TF)]
+    A[Imagenes] --> B[Extraccion de Descriptores SIFT u ORB]
+    B --> C[Clustering con KMeans]
+    C --> D[Codebook Visual Words]
+    D --> E[Histogramas TF IDF]
+
 ```
 
 ---
@@ -52,11 +53,12 @@ Esto reduce la cantidad de comparaciones y mejora el tiempo de búsqueda.
 ```mermaid
 
 flowchart TD
-    A[Imagen de Consulta] --> B[Descriptores + Histograma TF-IDF]
-    B --> C[Índice Invertido<br/>(visual_word → lista de imágenes)]
+    A[Imagen de Consulta] --> B[Histograma TF IDF]
+    B --> C[Busqueda en Indice Invertido Visual]
     C --> D[Filtrado de Candidatos Relevantes]
-    D --> E[Cálculo de Similitud de Coseno]
-    E --> F[Heap K Resultados<br/>(KNN)]
+    D --> E[Calculo de Similitud de Coseno]
+    E --> F[Heap K Resultados KNN]
+
 ```
 
 ---

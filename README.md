@@ -1,146 +1,62 @@
-# Backend – Índice Invertido para Descriptores Locales (Multimedia)
+# Indexación de Descriptores Locales – Bag of Visual Words
 
-Este módulo implementa un sistema de búsqueda de imágenes basado en descriptores locales usando Bag of Visual Words (BoVW), TF-IDF y un índice invertido.  
-El objetivo es permitir recuperar imágenes similares de forma eficiente sin usar librerías externas como sklearn.
+## 1. Construcción del Bag of Visual Words
 
----
+Primero se extraen descriptores locales (SIFT u ORB) de cada imagen.  
+Todos los descriptores del dataset se combinan en una sola matriz y se aplica un algoritmo K-Means implementado manualmente.  
+Cada cluster generado representa un *visual word*, y los centroides forman el **codebook**.  
 
-# Flujo General del Sistema
-
-[Diagrama de flujo: Imagen → Extracción de Descriptores SIFT/ORB → Codebook Clustering → Histogramas TF-IDF → Índice Invertido → KNN Similitud Coseno]
-
----
-
-# Extracción de Características
-
-Para cada imagen se extraen descriptores locales (SIFT u ORB).  
-Cada descriptor representa una pequeña parte de la imagen en forma de vector numérico.
-
-- Una imagen → muchos descriptores
-- Todos se guardan para construir el codebook
-- Proceso obligatorio para generar el sistema
-
-**Este paso incluye:**
-- Leer cada imagen del dataset
-- Extraer descriptores locales  
-- Guardarlos para el clustering
-- Acumular todos los descriptores en una sola matriz
+Luego, cada imagen se convierte en un **histograma**, donde cada posición indica cuántos de sus descriptores pertenecen a cada visual word. Esto permite representar todas las imágenes con vectores de igual tamaño.
 
 ---
 
-# Construcción del Codebook
+## 2. Técnica de Indexación Usada
 
-Se agrupan todos los descriptores usando un algoritmo propio de K-Means (sin sklearn).  
-Cada cluster representa una visual word.
+A cada histograma se le aplica **TF-IDF**, donde:
 
-[Diagrama de flujo: Descriptores de todas las imágenes → Agrupación en k clusters → Centroides → Codebook (k visual words)]
+- **TF** mide la frecuencia del visual word dentro de la imagen  
+- **DF** indica en cuántas imágenes aparece  
+- **IDF** disminuye el peso de visual words demasiado comunes  
 
-**Proceso:**
-- Combinar descriptores en una matriz
-- Aplicar K-Means manual
-- Cada cluster = visual word
-- Centroides = codebook
-- Cada imagen → histograma de visual words
+Con estos vectores se construye un **índice invertido**, cuya estructura es:
 
----
+visual_word_id → lista de (imagen_id, peso_tfidf)
 
-# Técnica de Indexación
-
-Se aplica el modelo TF-IDF a los histogramas:
-
-- TF: frecuencia del visual word en la imagen
-- DF: en cuántas imágenes aparece  
-- IDF: reduce peso de visual words comunes
-
-Con los vectores TF-IDF se construye un índice invertido:
-
-visual_word_id → [ (imagen_id, peso_tfidf), ... ]
+Este índice se guarda en archivos binarios (`df.bin`, `idf.bin`, `inverted_index.bin`) para cargarlo rápidamente cuando se necesita.
 
 ---
 
-# Índice Invertido
+## 3. Búsqueda KNN sobre los Histogramas
 
-Se construye un índice donde cada visual word apunta a las imágenes donde aparece, igual que en motores de búsqueda de texto.
+Se implementaron dos métodos de búsqueda:
 
-[Diagrama de flujo: Visual Word ID → Lista de imágenes donde aparece → Peso TF-IDF por imagen]
+### a) KNN Secuencial  
+1. Se extraen descriptores del query.  
+2. Se genera su histograma y se aplica TF-IDF.  
+3. Se calcula la similitud del coseno entre el query y cada imagen del dataset.  
+4. Se usa un heap para quedarse solo con los K resultados más similares.
 
-**Ejemplo visual:**
-Word 0 → img_01 (0.12), img_03 (0.15)
-Word 1 → img_02 (0.08), img_03
-Word 2 → img_01
-
----
-
-# Flujo de Construcción del Índice Invertido
-
-[Diagrama de flujo: Histogramas TF-IDF → Calcular DF e IDF → Generar pesos TF-IDF → Crear listas por visual word → Guardar inverted_index.bin]
+### b) KNN usando Índice Invertido  
+En lugar de comparar con todas las imágenes, solo se evalúan aquellas que contienen visual words presentes en el query.  
+Esto reduce la cantidad de comparaciones y mejora el tiempo de búsqueda.
 
 ---
 
-# Búsqueda KNN
+## 4. Impacto de la Maldición de la Dimensionalidad
 
-Para buscar imágenes similares:
+Los histogramas BoVW pueden tener muchas dimensiones (según k del clustering).  
+Esto afecta la precisión y eficiencia de la similitud, porque:
 
-1. Se extraen descriptores de la imagen de consulta
-2. Se genera su histograma usando el codebook
-3. Se obtiene su vector TF-IDF
-4. Se compara contra el índice invertido
-5. Se calcula la similitud de coseno
-6. Se usan heaps para obtener los K más parecidos
+- Distancias se vuelven menos discriminativas  
+- Vectores muy grandes generan más ruido  
+- El cálculo de similitud se vuelve más costoso  
 
-[Diagrama de flujo: Imagen de consulta → Histograma TF-IDF → Comparación contra índice invertido → Similitud de coseno → Heap con K resultados → Top K imágenes similares]
+### Estrategias aplicadas para mitigar el problema:
 
-**Versiones implementadas:**
-- KNN secuencial
-- KNN usando índice invertido (más eficiente)
+- **TF-IDF** para reducir impacto de palabras muy frecuentes  
+- **Normalización** de vectores antes de la similitud  
+- **Elección moderada de k** en el clustering  
+- Uso de similitud del coseno, que funciona mejor en alta dimensionalidad  
 
----
+Estas decisiones permiten que el sistema funcione de forma más estable y con mejores resultados.
 
-# Maldición de la Dimensionalidad
-
-Los histogramas tienen muchas dimensiones y esto afecta la precisión.  
-Para mitigar este problema se aplicó:
-
-- TF-IDF para reducir ruido
-- Normalización de vectores
-- Escoger un valor "k" moderado en el clustering
-
-Estas decisiones mejoran la precisión y estabilidad del sistema.
-
----
-
-## Distribución de Visual Words
-
-[Gráfico de torta: Word 0: 12%, Word 1: 8%, Word 2: 20%, Word 3: 14%, Word 4: 10%, Otros: 36%]
-
----
-
-# Archivos Generados
-
-Los datos del sistema se guardan en archivos binarios para evitar recalcular todo:
-
-- codebook.bin → centroides
-- df.bin → Document Frequency
-- idf.bin → IDF
-- histograms.bin → histogramas TF-IDF
-- inverted_index.bin → índice invertido
-
-Esto hace que el sistema pueda cargarse rápido sin recomputar los descriptores.
-
----
-
-
-# Esquema Completo
-
-[Diagrama de flujo completo: Conjunto de Imágenes → Extracción de Descriptores → Clustering (Codebook) → Histogramas TF-IDF → Índice Invertido → Consulta KNN → Ranking de Similares]
-
----
-
-# Resumen General
-
-- Se extraen descriptores locales por imagen
-- Se construye un codebook (visual words)
-- Se crean histogramas TF-IDF para cada imagen
-- Se construye un índice invertido
-- Se implementa KNN con similitud de coseno
-- Todo se guarda en binarios para reutilizarlo

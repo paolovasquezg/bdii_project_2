@@ -1,24 +1,24 @@
-# 🖼️ Indexación de Descriptores Locales (Multimedia Database)
+# Indexación de Descriptores Locales (Multimedia Database)
 
 En esta parte del proyecto se implementó un sistema de búsqueda para imágenes usando descriptores locales.  
 El objetivo es representar cada imagen como un conjunto de “visual words” y luego buscar imágenes similares usando técnicas como TF-IDF, índice invertido y KNN.
 
 ---
 
-# 🔧 1. Flujo general del sistema
+# Flujo general del sistema
 
 ```mermaid
 flowchart LR
-    A[Imagen] --> B[Extracción de Descriptores (SIFT u ORB)]
-    B --> C[Codebook (Clustering)]
+    A[Imagen] --> B[Extraccion de Descriptores SIFT ORB]
+    B --> C[Codebook Clustering]
     C --> D[Histogramas TF-IDF]
-    D --> E[Índice Invertido]
-    E --> F[KNN por Similitud de Coseno]
-```
+    D --> E[Indice Invertido]
+    E --> F[KNN Similitud Coseno]
+
 
 ---
 
-# 📌 2. Extracción de Características
+#  Extracción de Características
 
 Para cada imagen se extraen **descriptores locales** (como SIFT u ORB).  
 Cada descriptor representa una pequeña parte de la imagen en forma de vector numérico.
@@ -28,7 +28,7 @@ Cada descriptor representa una pequeña parte de la imagen en forma de vector nu
 
 ---
 
-# 📚 3. Construcción del Codebook
+#  Construcción del Codebook
 
 Se agrupan todos los descriptores usando un algoritmo propio de K-Means (sin sklearn).  
 Cada cluster representa una **visual word**.
@@ -42,23 +42,10 @@ flowchart LR
 
 Cada imagen luego se convierte en un histograma que indica cuántas visual words contiene.
 
----
-
-# 📊 4. Histogramas + TF-IDF
-
-Cada imagen se convierte en un **histograma** de visual words.  
-Después se aplica **TF-IDF** para ponderar visual words importantes.
-
-```mermaid
-flowchart TD
-    A[Descriptores de una imagen] --> B[Asignación al cluster más cercano]
-    B --> C[Histograma de frecuencias]
-    C --> D[TF-IDF<br>peso por importancia global]
-```
 
 ---
 
-# 🗄️ 5. Índice Invertido
+# Índice Invertido
 
 Se construye un índice donde **cada visual word apunta a las imágenes donde aparece**, igual que en motores de búsqueda de texto.
 
@@ -81,7 +68,7 @@ graph TD
 
 ---
 
-# 🔍 6. Búsqueda KNN (Similitud de Coseno)
+# Búsqueda KNN 
 
 Para buscar imágenes similares:
 
@@ -102,36 +89,8 @@ flowchart TD
 
 ---
 
-# 📈 7. Gráficos incluidos
 
-## 🔹 Costo relativo por etapa
-
-```mermaid
-pie showData
-    title Costo relativo por etapa
-    "Extracción de descriptores" : 45
-    "Construcción del codebook" : 30
-    "TF-IDF" : 10
-    "Índice invertido" : 5
-    "Búsqueda KNN" : 10
-```
-
----
-
-## 🔹 Comparación: Búsqueda Secuencial vs Índice Invertido
-
-```mermaid
-bar
-    title Comparación de tiempos
-    xaxis Imagen
-    yaxis ms
-    "Secuencial" 120 110 130 125
-    "Índice invertido" 15 12 18 14
-```
-
----
-
-## 🔹 Distribución de visual words
+##  Distribución de visual words
 
 ```mermaid
 pie showData
@@ -146,7 +105,7 @@ pie showData
 
 ---
 
-# 📦 8. Archivos generados
+#  Archivos generados
 
 Los datos del sistema se guardan en archivos binarios para evitar recalcular todo:
 
@@ -160,7 +119,7 @@ Esto hace que el sistema pueda cargarse rápido sin recomputar los descriptores.
 
 ---
 
-# ✔️ Resumen general
+#  Resumen general
 
 - Se extraen descriptores locales por imagen.  
 - Se construye un codebook (visual words).  

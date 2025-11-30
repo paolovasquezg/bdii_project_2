@@ -62,3 +62,22 @@ export const uploadMedia = async (file: File) => {
     return { success: false, error: err.message };
   }
 };
+
+export const createTableFromCsv = async (file: File, table: string) => {
+  const form = new FormData();
+  form.append('table', table);
+  form.append('file', file);
+  try {
+    const response = await fetch(`${API_BASE}/create-table-from-csv`, {
+      method: 'POST',
+      body: form
+    });
+    if (!response.ok) {
+      return { success: false, error: response.status };
+    }
+    const data = await response.json();
+    return { success: true, data };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+};

@@ -23,7 +23,7 @@ def get_json(filename: str, n: int = 1):
             data = f.read(size)
             if not data or len(data) < size:
                 break
-            result.append(json.loads(data.decode("utf-8")))
+            result.append(json.loads(data.decode()))
     return result
 
 def put_json(filename: str, data):
@@ -31,7 +31,7 @@ def put_json(filename: str, data):
         data = [data]
     with open(filename, "wb") as f:
         for item in data:
-            out = json.dumps(item).encode("utf-8")
+            out = json.dumps(item).encode()
             f.write(struct.pack("I", len(out)))
             f.write(out)
 

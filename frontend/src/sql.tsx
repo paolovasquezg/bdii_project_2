@@ -3,7 +3,7 @@ import { Database, Play, Table2, CheckCircle, AlertCircle, ChevronRight, Chevron
 import { Button } from "../src/components/button.tsx"
 import { Card } from "../src/components/card.tsx"
 import { ScrollArea } from "../src/components/scroll.tsx"
-import { loadTables, execQuery, uploadMedia } from "./data/data"
+import { loadTables, execQuery, uploadMedia, createTableFromCsv } from "./data/data"
 
 const SQLQueryInterface = () => {
   const apiBase = (import.meta.env.VITE_API_URL as string | undefined) || "http://127.0.0.1:8000"
@@ -27,6 +27,11 @@ const SQLQueryInterface = () => {
   const [uploadError, setUploadError] = useState<string>("")
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [lastResult, setLastResult] = useState<any | null>(null)
+  const [csvTable, setCsvTable] = useState<string>("")
+  const [csvMsg, setCsvMsg] = useState<string>("")
+  const [csvErr, setCsvErr] = useState<string>("")
+  const [csvProcessing, setCsvProcessing] = useState(false)
+  const [csvCount, setCsvCount] = useState<number | null>(null)
 
   const executeQuery = async () => {
     setIsExecuting(true)
@@ -107,16 +112,21 @@ const SQLQueryInterface = () => {
   }, [results, isKnn])
 
   const [viewerSrc, setViewerSrc] = useState<string | null>(null)
-  const [viewerKind, setViewerKind] = useState<"image" | "audio" | null>(null)
+  const [viewerKind, setViewerKind] = useState<"image" | "audio" | "text" | null>(null)
+  const [viewerTitle, setViewerTitle] = useState<string | null>(null)
+  const [sidebarWidth, setSidebarWidth] = useState<number>(260)
+  const [resizing, setResizing] = useState<boolean>(false)
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
     setSelectedFile(f || null)
     setUploadError("")
     setUploadMsg("")
+    setCsvErr("")
+    setCsvMsg("")
   }
 
-  const handleUpload = async () => {
+  const handleMediaUpload = async () => {
     if (!selectedFile) {
       setUploadError("Selecciona un archivo primero.")
       return
@@ -134,8 +144,36 @@ const SQLQueryInterface = () => {
     setUploading(false)
   }
 
-  const defaultImgPath = "/home/bianca/Pictures/Screenshots/<archivo>"
-  const defaultAudioPath = "<ruta_de_audio>"
+  const handleCsvUpload = async () => {
+    if (!selectedFile || !csvTable.trim()) {
+      setCsvErr("Selecciona CSV y nombre de tabla")
+      setCsvMsg("")
+      return
+    }
+    setCsvErr("")
+    setCsvMsg("Procesando...")
+    setCsvProcessing(true)
+    setCsvCount(null)
+    const resp = await createTableFromCsv(selectedFile, csvTable.trim())
+    setCsvProcessing(false)
+    if (resp.success) {
+      const count =
+        (resp.data?.result?.results?.[0]?.meta?.affected as number | undefined) ??
+        (resp.data?.result?.count as number | undefined) ??
+        null
+      if (count !== null) setCsvCount(count)
+      setCsvMsg(`Tabla ${csvTable} creada desde CSV${count ? ` (${count} filas)` : ""}`)
+      setCsvErr("")
+      fetchTables()
+    } else {
+      setCsvErr(`Error: ${resp.error}`)
+      setCsvMsg("")
+    }
+  }
+
+  const defaultImgPath = "/app/backend/runtime/uploads/<imagen>"
+  const defaultAudioPath = "/app/backend/runtime/uploads/<audio>"
+  const defaultCsvPath = "/app/backend/runtime/uploads/csv/<archivo>"
 
   const insertTemplate = (kind: "img" | "audio" | "text") => {
     const tbl = selectedTable || "<tabla>"
@@ -151,9 +189,34 @@ const SQLQueryInterface = () => {
     }
   }
 
+  const insertCsvTemplate = () => {
+    const path = uploadPath || defaultCsvPath
+    setQuery(`CREATE TABLE <tabla> FROM '${path}';`)
+  }
+
+  // drag-to-resize sidebar
+  useEffect(() => {
+    const onMove = (ev: MouseEvent) => {
+      if (!resizing) return
+      const next = Math.min(Math.max(ev.clientX, 200), 480)
+      setSidebarWidth(next)
+      ev.preventDefault()
+    }
+    const onUp = () => setResizing(false)
+    window.addEventListener("mousemove", onMove)
+    window.addEventListener("mouseup", onUp)
+    return () => {
+      window.removeEventListener("mousemove", onMove)
+      window.removeEventListener("mouseup", onUp)
+    }
+  }, [resizing])
+
   return (
-    <div className="flex h-screen bg-background">
-      <aside className="w-64 border-r border-border bg-sidebar flex flex-col">
+    <div className="flex min-h-screen bg-background">
+      <aside
+        className="border-r border-border bg-sidebar flex flex-col sticky top-0 h-screen"
+        style={{ width: sidebarWidth }}
+      >
         <div className="p-4 border-b border-sidebar-border">
           <div className="flex items-center gap-2 text-sidebar-foreground">
             <Database className="h-5 w-5" />
@@ -255,22 +318,33 @@ const SQLQueryInterface = () => {
         </ScrollArea>
       </aside>
 
+      <div
+        className={`w-1 hover:bg-foreground/30 cursor-col-resize transition-colors ${
+          resizing ? "bg-foreground/50" : ""
+        }`}
+        onMouseDown={(e) => {
+          e.preventDefault()
+          setResizing(true)
+        }}
+        title="Arrastra para cambiar el ancho"
+      />
+
       <main className="flex-1 flex flex-col overflow-hidden">
         <div className="border-b border-border bg-card">
           <div className="p-4">
             <div className="flex items-start gap-3">
               <div className="flex-1">
                 <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <label className="text-xs font-semibold text-muted-foreground">Subir imagen/audio</label>
+                  <label className="text-xs font-semibold text-muted-foreground">Subir archivo</label>
                   <input
                     type="file"
-                    accept="image/*,audio/*"
+                    accept="image/*,audio/*,.csv,text/csv"
                     onChange={handleFileSelect}
                     className="text-xs"
                   />
-                  <Button size="sm" onClick={handleUpload} disabled={uploading}>
+                  <Button size="sm" onClick={handleMediaUpload} disabled={uploading}>
                     <Upload className="h-4 w-4 mr-1" />
-                    {uploading ? "Subiendo..." : "Subir"}
+                    {uploading ? "Subiendo..." : "Subir archivo"}
                   </Button>
                   {uploadPath && (
                     <span className="text-xs font-mono text-foreground truncate max-w-xs" title={uploadPath}>
@@ -295,6 +369,10 @@ const SQLQueryInterface = () => {
                   <Button size="sm" variant="outline" onClick={() => insertTemplate("text")}>
                     <Wand2 className="h-4 w-4 mr-1" />
                     Plantilla TEXTO KNN
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={insertCsvTemplate}>
+                    <Wand2 className="h-4 w-4 mr-1" />
+                    Plantilla CSV
                   </Button>
                 </div>
                 <textarea
@@ -344,9 +422,9 @@ const SQLQueryInterface = () => {
           </div>
         </div>
 
-        <div className="flex-1 overflow-hidden p-4">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden p-4 min-h-0">
           {results.length > 0 ? (
-            <div className="h-full overflow-hidden flex flex-col gap-3">
+          <div className="h-full overflow-hidden flex flex-col gap-3">
               {isKnn && (
                 <Card className="p-4">
                   <div className="flex items-center justify-between mb-2">
@@ -354,49 +432,58 @@ const SQLQueryInterface = () => {
                     {uploadPath && <span className="text-xs text-muted-foreground truncate max-w-sm">{uploadPath}</span>}
                   </div>
                   {similarityRows.length > 0 ? (
-                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                      {similarityRows.map((r, i) => (
-                        <div
-                          key={i}
-                          className="rounded-lg border border-border p-3 bg-muted/30 cursor-pointer hover:border-foreground/50"
-                          onClick={() => {
-                            const pImg = (r as any).image_path as string | undefined
-                            const pAud = (r as any).file_path as string | undefined
-                            if (pImg) {
-                                setViewerSrc(pImg)
-                                setViewerKind("image")
-                            } else if (pAud) {
-                                setViewerSrc(pAud)
-                                setViewerKind("audio")
-                            }
-                          }}
-                          title="Click para ver imagen (si hay image_path)"
-                        >
-                          <div className="text-xs text-muted-foreground mb-1">#{i + 1}</div>
-                          <div className="text-sm font-semibold text-foreground">
-                            {(r.title as string) || (r.file_name as string) || (r.content as string) || r.id || "row"}
-                          </div>
-                          {typeof r.similarity !== "undefined" && r.similarity !== null && (
-                            <div className="text-xs text-emerald-500 font-mono">
-                              sim: {Number(r.similarity).toFixed(6)}
+                    <ScrollArea className="max-h-[50vh] min-h-[200px] pr-2">
+                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                        {similarityRows.map((r, i) => (
+                          <div
+                            key={i}
+                            className="rounded-lg border border-border p-3 bg-muted/30 cursor-pointer hover:border-foreground/50"
+                            onClick={() => {
+                              const pImg = (r as any).image_path as string | undefined
+                              const pAud = (r as any).file_path as string | undefined
+                              const pText = (r as any).content as string | undefined
+                              if (pImg) {
+                                  setViewerSrc(pImg)
+                                  setViewerKind("image")
+                                  setViewerTitle((r as any).title || (r as any).file_name || "Imagen")
+                              } else if (pAud) {
+                                  setViewerSrc(pAud)
+                                  setViewerKind("audio")
+                                  setViewerTitle((r as any).file_name || "Audio")
+                              } else if (pText) {
+                                  setViewerSrc(pText)
+                                  setViewerKind("text")
+                                  setViewerTitle((r as any).title || (r as any).id || "Texto")
+                              }
+                            }}
+                            title="Click para ver imagen (si hay image_path)"
+                          >
+                            <div className="text-xs text-muted-foreground mb-1">#{i + 1}</div>
+                            <div className="text-sm font-semibold text-foreground">
+                              {(r.title as string) || (r.file_name as string) || (r.content as string) || r.id || "row"}
                             </div>
-                          )}
-                          <div className="text-xs text-muted-foreground break-all">
-                            {Object.entries(r)
-                              .filter(([k]) => k !== "similarity")
-                              .slice(0, 3)
-                              .map(([k, v]) => `${k}: ${v}`)
-                              .join(" • ")}
+                            {typeof r.similarity !== "undefined" && r.similarity !== null && (
+                              <div className="text-xs text-emerald-500 font-mono">
+                                sim: {Number(r.similarity).toFixed(6)}
+                              </div>
+                            )}
+                            <div className="text-xs text-muted-foreground break-all">
+                              {Object.entries(r)
+                                .filter(([k]) => k !== "similarity")
+                                .slice(0, 3)
+                                .map(([k, v]) => `${k}: ${v}`)
+                                .join(" • ")}
+                            </div>
                           </div>
-                        </div>
-                      ))}
-                    </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
                   ) : (
                     <p className="text-xs text-muted-foreground">Sin resultados (0 filas retornadas).</p>
                   )}
                 </Card>
               )}
-              <Card className="h-full overflow-hidden flex flex-col">
+              <Card className="h-full min-h-0 overflow-hidden flex flex-col">
                 <div className="border-b border-border px-4 py-3">
                   <h3 className="text-sm font-semibold text-foreground">Results ({results.length} rows)</h3>
                 </div>
@@ -604,16 +691,25 @@ const SQLQueryInterface = () => {
       {viewerSrc && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm bg-black/30 p-4"
-          onClick={() => setViewerSrc(null)}
+          onClick={() => {
+            setViewerSrc(null)
+            setViewerTitle(null)
+          }}
         >
           <Card
-            className="w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl bg-white"
+            className="w-full max-w-6xl max-h-[90vh] flex flex-col shadow-2xl bg-white"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="border-b border-border px-6 py-4 flex items-center justify-between shrink-0">
-              <h3 className="text-lg font-semibold text-card-foreground">Previsualización</h3>
+              <div>
+                <h3 className="text-lg font-semibold text-card-foreground">Previsualización</h3>
+                {viewerTitle && <p className="text-xs text-muted-foreground">{viewerTitle}</p>}
+              </div>
               <Button
-                onClick={() => setViewerSrc(null)}
+                onClick={() => {
+                  setViewerSrc(null)
+                  setViewerTitle(null)
+                }}
                 variant="ghost"
                 size="sm"
                 className="h-8 w-8 p-0 hover:bg-accent"
@@ -622,7 +718,7 @@ const SQLQueryInterface = () => {
                 <span className="sr-only">Close</span>
               </Button>
             </div>
-            <ScrollArea className="flex-1 p-4">
+            <ScrollArea className="flex-1 p-4 max-h-[80vh]">
               {viewerKind === "image" && (() => {
                 const resolved = viewerSrc.startsWith("http")
                   ? viewerSrc
@@ -646,7 +742,14 @@ const SQLQueryInterface = () => {
                   </audio>
                 )
               })()}
-              <div className="mt-2 text-xs text-muted-foreground break-all text-center font-mono">{viewerSrc}</div>
+              {viewerKind === "text" && (
+                <pre className="whitespace-pre-wrap text-sm text-card-foreground bg-muted/30 border border-border rounded-lg p-4 max-h-[70vh] overflow-auto">
+                  {viewerSrc}
+                </pre>
+              )}
+              {viewerKind !== "text" && (
+                <div className="mt-2 text-xs text-muted-foreground break-all text-center font-mono">{viewerSrc}</div>
+              )}
             </ScrollArea>
           </Card>
         </div>

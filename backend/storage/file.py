@@ -12,6 +12,7 @@ import struct
 import csv
 import os
 import copy
+import io
 
 DEBUG_IDX = os.getenv("BD2_DEBUG_INDEX", "0").lower() in ("1", "true", "yes")
 
@@ -1279,43 +1280,61 @@ class File:
             path = _os.path.abspath(params["path"])
             if not _os.path.exists(path):
                 raise FileNotFoundError(f"CSV no encontrado: {path}")
-            all_recs = []
-            with open(path, newline="", encoding="utf-8") as f:
-                r = csv.DictReader(f)
-                for row in r:
-                    rec = {}
-                    for col, spec in self.relation.items():
-                        if col not in row:
-                            continue
-                        v = row[col]
-                        t = (spec.get("type") or "").lower()
-                        if isinstance(v, str):
-                            v = v.strip()
-                            # JSON-like (para listas/coords)
-                            if v.startswith("[") and v.endswith("]"):
-                                try:
-                                    v = _json.loads(v)
-                                except Exception:
-                                    pass
-                        if v == "" or v is None:
-                            v = None
-                        elif t in ("int", "i", "integer"):
+            # Lectura tolerante a encodings parciales/raros
+            reader = csv.DictReader(open(path, newline="", encoding="utf-8", errors="replace"))
+
+            chunk = []
+            chunk_size = 5000
+            total = 0
+
+            def _flush(buf):
+                for rec in buf:
+                    self.insert({"record": rec, "skip_unique_check": True})
+
+            for row in reader:
+                rec = {}
+                for col, spec in self.relation.items():
+                    if col not in row:
+                        continue
+                    v = row[col]
+                    t = (spec.get("type") or "").lower()
+                    if isinstance(v, str):
+                        v = v.strip()
+                        if v.startswith("[") and v.endswith("]"):
+                            try:
+                                v = _json.loads(v)
+                            except Exception:
+                                pass
+                    if v == "" or v is None:
+                        v = None
+                    elif t in ("int", "i", "integer"):
+                        try:
                             v = int(v)
-                        elif t in ("float", "real", "f", "double"):
-                            v = float(v)
-                        elif t in ("bool", "boolean", "?"):
-                            v = str(v).lower() in ("1", "true", "t", "yes", "y")
-                        rec[col] = v
-                    all_recs.append(rec)
-            # Insert all at once (cached rtrees will accumulate across calls)
-            for rec in all_recs:
-                self.insert({"record": rec, "skip_unique_check": True})
-            # Close all cached rtrees to persist headers
+                        except Exception:
+                            try:
+                                v = int(float(v))
+                            except Exception:
+                                raise
+                    elif t in ("float", "real", "f", "double"):
+                        v = float(v)
+                    elif t in ("bool", "boolean", "?"):
+                        v = str(v).lower() in ("1", "true", "t", "yes", "y")
+                    rec[col] = v
+                if rec:
+                    chunk.append(rec)
+                    total += 1
+                    if len(chunk) >= chunk_size:
+                        _flush(chunk)
+                        chunk.clear()
+
+            if chunk:
+                _flush(chunk)
+
             self._close_cached_rtrees()
             self._close_cached_invtext()
-            if DEBUG_IDX: print(f"[import_csv] closed cached rtrees after {len(all_recs)} records")
+            if DEBUG_IDX: print(f"[import_csv] closed cached rtrees after {total} records")
             self.last_io = self.io_get()
-            return {"count": len(all_recs)}
+            return {"count": total}
         
         elif params["op"] == "get_all":
             return self.get_all()

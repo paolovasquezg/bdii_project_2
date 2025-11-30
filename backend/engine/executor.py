@@ -166,7 +166,10 @@ def _infer_type(values):
 
 
 def _infer_fields_from_csv(path, index_column=None, index_method=None, sample_rows=200):
-    with open(path, newline="", encoding="utf-8") as f:
+    # Mantén abierto el archivo mientras se itera el reader; cerrarlo antes provoca
+    # "I/O operation on closed file" al crear la tabla desde CSV.
+    # Usa errors="replace" para tolerar CSV con codificaciones raras o bytes cortados.
+    with open(path, newline="", encoding="utf-8", errors="replace") as f:
         r = _csv.DictReader(f)
         headers = r.fieldnames or []
         buckets = {h: [] for h in headers}
@@ -201,6 +204,11 @@ def _infer_fields_from_csv(path, index_column=None, index_method=None, sample_ro
             fdef["index"] = (index_method or "heap")
 
         fields.append(fdef)
+
+    # Si no se especificó columna de índice, asumimos la primera como PK con índice heap
+    if fields and not any(f.get("key") == "primary" for f in fields):
+        fields[0]["key"] = "primary"
+        fields[0]["index"] = index_method or "heap"
 
     return fields
 
@@ -344,29 +352,29 @@ class Executor:
                     if pk_kind == "isam":
                         # build ISAM en una sola pasada
                         recs = []
-                        with open(path, newline="", encoding="utf-8") as f:
+                        with open(path, newline="", encoding="utf-8", errors="replace") as f:
                             r = _csv.DictReader(f)
-                            for row in r:
-                                rec = {}
-                                for col, spec in F.relation.items():
-                                    v = row.get(col)
-                                    t = str(spec.get("type") or "").lower()
-                                    if isinstance(v, str) and v.startswith("[") and v.endswith("]"):
-                                        try:
-                                            import json
-                                            v = json.loads(v)
-                                        except Exception:
-                                            pass
-                                    if v == "" or v is None:
-                                        v = None
-                                    elif t in ("int", "i"):
-                                        v = int(v)
-                                    elif t in ("float", "real", "double", "f"):
-                                        v = float(v)
-                                    elif t in ("bool", "boolean", "?"):
-                                        v = str(v).strip().lower() in ("1", "true", "t", "yes", "y")
-                                    rec[col] = v
-                                recs.append(rec)
+                        for row in r:
+                            rec = {}
+                            for col, spec in F.relation.items():
+                                v = row.get(col)
+                                t = str(spec.get("type") or "").lower()
+                                if isinstance(v, str) and v.startswith("[") and v.endswith("]"):
+                                    try:
+                                        import json
+                                        v = json.loads(v)
+                                    except Exception:
+                                        pass
+                                if v == "" or v is None:
+                                    v = None
+                                elif t in ("int", "i"):
+                                    v = int(v)
+                                elif t in ("float", "real", "double", "f"):
+                                    v = float(v)
+                                elif t in ("bool", "boolean", "?"):
+                                    v = str(v).strip().lower() in ("1", "true", "t", "yes", "y")
+                                rec[col] = v
+                            recs.append(rec)
                         F.io_reset()
                         F.index_reset()
                         F.execute({"op": "build", "records": recs})

@@ -134,15 +134,15 @@ class Record:
                 elif t in ("d", "double", "double precision"):
                     values[name] = float(raw)
                 elif t in ("c", "char"):
-                    values[name] = raw.decode("utf-8").rstrip("\x00 ")
+                    values[name] = raw.decode("utf-8", errors="replace").rstrip("\x00 ")
                 elif t in ("s", "varchar", "string"):
-                    values[name] = raw.decode("utf-8").rstrip("\x00 ")
+                    values[name] = raw.decode("utf-8", errors="replace").rstrip("\x00 ")
                 elif t in ("b", "bool", "boolean", "?"):
                     values[name] = bool(raw)
                 elif t in ("blob", "binary"):
                     values[name] = raw
                 elif t in ("date", "datetime"):
-                    values[name] = raw.decode("utf-8").rstrip("\x00 ")
+                    values[name] = raw.decode("utf-8", errors="replace").rstrip("\x00 ")
                 else:
                     values[name] = raw
                 unpacked_idx += 1

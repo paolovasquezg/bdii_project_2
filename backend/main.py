@@ -1,7 +1,7 @@
 import os
 import uuid
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from backend.catalog.ddl import load_tables
@@ -26,6 +26,8 @@ class Query(BaseModel):
 
 UPLOAD_DIR = Path(__file__).resolve().parent / "runtime" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+CSV_UPLOAD_DIR = UPLOAD_DIR / "csv"
+CSV_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 @app.get("/")
 def root():
@@ -49,6 +51,39 @@ def get_tables():
 def do_query(query: Query):
     return engine.run(query.content)
 
+@app.post("/create-table-from-csv")
+async def create_table_from_csv(table: str = Form(...), file: UploadFile = File(...)):
+    """
+    Sube un CSV y crea la tabla usando CREATE TABLE <table> FROM FILE '<path>'.
+    Guarda el CSV en runtime/uploads/csv.
+    """
+    if not table or not table.strip():
+        raise HTTPException(status_code=400, detail="Nombre de tabla requerido")
+
+    dest = CSV_UPLOAD_DIR / f"{uuid.uuid4().hex}.csv"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # Guarda tal cual el archivo sin tocar encoding
+    try:
+        raw = await file.read()
+        dest.write_bytes(raw)
+    finally:
+        await file.close()
+
+    sql = f"CREATE TABLE {table} FROM FILE '{dest}';"
+    try:
+        result = engine.run(sql)
+        count = None
+        try:
+            first = (result.get("results") or [None])[0] or {}
+            meta = first.get("meta") or {}
+            count = meta.get("affected") or meta.get("count")
+        except Exception:
+            count = None
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error creando tabla: {e}")
+
+    return {"ok": True, "table": table, "path": str(dest), "result": result, "count": count}
+
 @app.get("/file")
 def get_file(path: str):
     """
@@ -67,10 +102,14 @@ async def upload_media(file: UploadFile = File(...)):
     Recibe imagen/audio y lo guarda en backend/runtime/uploads/<uuid>.<ext>.
     Devuelve la ruta absoluta para usarla en queries (ej. INSERT o KNN IMG()).
     """
-    # Validación básica de tipo
+    # Validación básica de tipo (permitimos imagen, audio y csv para reutilizar el mismo endpoint)
     ct = (file.content_type or "").lower()
-    if not (ct.startswith("image/") or ct.startswith("audio/") or ct in ("application/octet-stream",)):
-        raise HTTPException(status_code=400, detail="Solo se permiten imágenes o audios.")
+    if not (
+        ct.startswith("image/")
+        or ct.startswith("audio/")
+        or ct in ("application/octet-stream", "text/csv", "application/csv")
+    ):
+        raise HTTPException(status_code=400, detail="Solo se permiten imágenes, audios o CSV.")
 
     # Derivar extensión
     filename = file.filename or ""
@@ -83,6 +122,8 @@ async def upload_media(file: UploadFile = File(...)):
             ext = ct.split("/", 1)[1]
         elif ct.startswith("audio/"):
             ext = ct.split("/", 1)[1]
+        elif ct in ("text/csv", "application/csv"):
+            ext = "csv"
         else:
             ext = "bin"
 

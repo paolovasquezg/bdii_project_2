@@ -83,20 +83,20 @@ class InvertedTextFile:
 
         vocab_path = os.path.join(self.base_dir, "vocab.json")
         if os.path.exists(vocab_path):
-            with open(vocab_path, "r", encoding="utf-8") as f:
+            with open(vocab_path, "r") as f:
                 for t in json.load(f) or []:
                     self.vocab[str(t)] = True
             self.read_count += 1  # vocab
 
         idf_path = os.path.join(self.base_dir, "idf.json")
         if os.path.exists(idf_path):
-            with open(idf_path, "r", encoding="utf-8") as f:
+            with open(idf_path, "r") as f:
                 self.idf = {str(k): float(v) for k, v in (json.load(f) or {}).items()}
             self.read_count += 1  # idf
 
         postings_path = os.path.join(self.base_dir, "postings.jsonl")
         if os.path.exists(postings_path):
-            with open(postings_path, "r", encoding="utf-8") as f:
+            with open(postings_path, "r") as f:
                 for line in f:
                     try:
                         obj = json.loads(line)
@@ -110,7 +110,7 @@ class InvertedTextFile:
 
         doc_map_path = os.path.join(self.base_dir, "doc_map.json")
         if os.path.exists(doc_map_path):
-            with open(doc_map_path, "r", encoding="utf-8") as f:
+            with open(doc_map_path, "r") as f:
                 try:
                     raw = json.load(f) or {}
                     for k, v in raw.items():

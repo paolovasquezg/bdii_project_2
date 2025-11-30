@@ -9,8 +9,8 @@ El objetivo es representar cada imagen como un conjunto de “visual words” y 
 
 ```mermaid
 flowchart LR
-    A[Imagen] --> B[Extracción de Descriptores<br>(SIFT / ORB)]
-    B --> C[Codebook<br>(Clustering)]
+    A[Imagen] --> B[Extracción de Descriptores (SIFT u ORB)]
+    B --> C[Codebook (Clustering)]
     C --> D[Histogramas TF-IDF]
     D --> E[Índice Invertido]
     E --> F[KNN por Similitud de Coseno]

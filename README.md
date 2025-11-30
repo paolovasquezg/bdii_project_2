@@ -8,12 +8,14 @@ Cada cluster generado representa un *visual word*, y los centroides forman el **
 
 Luego, cada imagen se convierte en un **histograma**, donde cada posición indica cuántos de sus descriptores pertenecen a cada visual word. Esto permite representar todas las imágenes con vectores de igual tamaño.
 
+```mermaid
+
 flowchart LR
     A[Imágenes] --> B[Extracción de Descriptores<br/>(SIFT u ORB)]
     B --> C[Clustering Manual<br/>(K-Means)]
     C --> D[Codebook<br/>(Visual Words)]
     D --> E[Histogramas BoVW<br/>(TF)]
-
+```
 
 ---
 
@@ -47,13 +49,15 @@ Se implementaron dos métodos de búsqueda:
 En lugar de comparar con todas las imágenes, solo se evalúan aquellas que contienen visual words presentes en el query.  
 Esto reduce la cantidad de comparaciones y mejora el tiempo de búsqueda.
 
+```mermaid
+
 flowchart TD
     A[Imagen de Consulta] --> B[Descriptores + Histograma TF-IDF]
     B --> C[Índice Invertido<br/>(visual_word → lista de imágenes)]
     C --> D[Filtrado de Candidatos Relevantes]
     D --> E[Cálculo de Similitud de Coseno]
     E --> F[Heap K Resultados<br/>(KNN)]
-
+```
 
 ---
 

@@ -283,11 +283,29 @@ python backend/scripts.py/test_knn_queries.py
 
 ## **RESULTADOS OBTENIDOS**
 
-### **Performance Lograda**
+### **Performance Lograda - Experimentación**
 
-- **Speedup:** Se logró 3.04x más velocidad con índice invertido
-- **Precisión:** Se alcanzó 0.9878 de similarity para auto-búsqueda
-- **Escalabilidad:** Se redujo 60-80% de las comparaciones necesarias
+Los resultados experimentales demuestran el comportamiento realista de ambos métodos:
+
+![Gráfico de Performance](images/performance_analysis_complete.png)
+
+| Tamaño Dataset (N) | KNN Secuencial | KNN Indexado | Speedup |
+| ------------------ | -------------- | ------------ | ------- |
+| 1,000              | 0.0078s        | 0.0027s      | 2.85x   |
+| 2,000              | 0.0272s        | 0.0066s      | 4.14x   |
+| 4,000              | 0.0298s        | 0.0127s      | 2.35x   |
+| 8,000              | 0.0586s        | 0.0179s      | 3.28x   |
+| 16,000             | 0.1157s        | 0.0246s      | 4.71x   |
+| 32,000             | 0.2281s        | 0.0358s      | 6.38x   |
+| 64,000             | 0.4542s        | 0.0499s      | 9.10x   |
+
+**Análisis de Comportamiento:**
+
+- **N≥1,000:** El método indexado es consistentemente superior desde datasets pequeños
+- **Escalabilidad Progresiva:** Speedup mejora conforme crece el dataset
+- **Speedup Mínimo:** 2.35x para N=4,000 (fluctuación normal)
+- **Speedup Máximo:** 9.10x para datasets grandes (N=64,000)
+- **Tendencia General:** El índice invertido demuestra ventajas en todos los tamaños
 
 ### **Arquitectura Conseguida**
 

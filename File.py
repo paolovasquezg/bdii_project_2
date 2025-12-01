@@ -115,7 +115,7 @@ class File:
             createInvertedIndex(f"{inverted_folder}bloques", records, "description", "pos")
             
             inicio = records_for_ram
-
+            
             while inicio < total_records:
 
                 records = RecFile.get_range_records(inicio, inicio+records_for_ram)
@@ -123,7 +123,9 @@ class File:
                 addInvertedIndex(f"{inverted_folder}bloques", records, "description", "pos")
 
                 inicio += salto
-
+            
+            finalizar_indice_spimi(f"{inverted_folder}bloques")
+       
     def drop_inverted_text_index(self, column: str):
 
         if column not in self.relation or column not in self.indexes:

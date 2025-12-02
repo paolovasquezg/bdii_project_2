@@ -1,4 +1,5 @@
 from backend.catalog.catalog import get_json, get_filename
+from backend.catalog.settings import DATA_DIR
 from backend.storage.indexes.heap import HeapFile
 from backend.storage.indexes.sequential import SeqFile
 from backend.storage.indexes.isam import IsamFile
@@ -13,6 +14,7 @@ import csv
 import os
 import copy
 import io
+import shutil
 
 DEBUG_IDX = os.getenv("BD2_DEBUG_INDEX", "0").lower() in ("1", "true", "yes")
 
@@ -290,6 +292,30 @@ class File:
                 tmp.extend(self.search({"op": "search", "field": self.primary_key, "value": pk}) or [])
             results = tmp
         return results
+
+    def _collect_records_for_invtext(self):
+        """Devuelve registros físicos y mezcla contadores de IO según el índice primario."""
+        prim_kind = self.indexes["primary"]["index"]
+        mainfilename = self.indexes["primary"]["filename"]
+
+        if prim_kind == "heap":
+            hf = HeapFile(mainfilename)
+            records = hf.get_all(True)
+            self.io_merge(hf, "heap")
+        elif prim_kind == "sequential":
+            sf = SeqFile(mainfilename)
+            records = sf.get_all()
+            self.io_merge(sf, "sequential")
+        elif prim_kind == "isam":
+            isf = IsamFile(mainfilename)
+            records = isf.get_all()
+            self.io_merge(isf, "isam")
+        else:
+            bp = BPlusFile(mainfilename)
+            records = bp.get_all()
+            self.io_merge(bp, "bplus")
+
+        return prim_kind, mainfilename, records
 
     def _usable_secondary_kind(self, field: str):
         # Nunca prefieras un "secundario" cuando el campo es la PK.
@@ -1227,6 +1253,99 @@ class File:
 
         return records
 
+    def create_inverted_text_index(self, column: str):
+        if column not in self.relation or column in self.indexes:
+            return
+
+        col_type = str(self.relation.get(column, {}).get("type", "")).lower()
+        if col_type not in ("c", "char", "s", "varchar", "string", "text"):
+            return
+
+        prim_kind, mainfilename, records = self._collect_records_for_invtext()
+        base_dir = DATA_DIR / self.table / f"{self.table}-invtext-{column}"
+        tmp_dir = DATA_DIR / self.table / f".tmp-{self.table}-invtext-{column}"
+        os.makedirs(tmp_dir, exist_ok=True)
+
+        if prim_kind == "heap":
+            valid = []
+            for pair in records or []:
+                if not isinstance(pair, tuple) or len(pair) < 2:
+                    continue
+                row, pos = pair[0], pair[1]
+                if not isinstance(row, dict):
+                    continue
+                if column not in row or row[column] is None or str(row[column]).strip() == "":
+                    continue
+                if self.primary_key not in row:
+                    continue
+                valid.append((row, pos))
+        else:
+            valid = []
+            for row in records or []:
+                if not isinstance(row, dict):
+                    continue
+                if column not in row or row[column] is None or str(row[column]).strip() == "":
+                    continue
+                if self.primary_key not in row:
+                    continue
+                valid.append(row)
+
+        if not valid:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return
+
+        try:
+            inv = InvertedTextFile(str(tmp_dir), key=column,
+                                   heap_file=(mainfilename if prim_kind == "heap" else None))
+            inv.build_bulk(valid, text_field=column, pk_name=self.primary_key, main_index=prim_kind)
+
+            dm = os.path.join(str(tmp_dir), "doc_map.json")
+            if not os.path.exists(dm):
+                raise RuntimeError("invtext build no generó doc_map.json")
+            with open(dm, "r", encoding="utf-8") as f:
+                doc_map = _json.load(f) or {}
+            if not isinstance(doc_map, dict) or not doc_map:
+                raise RuntimeError("invtext doc_map.json vacío (0 documentos indexados)")
+
+            if os.path.exists(base_dir):
+                shutil.rmtree(base_dir, ignore_errors=True)
+            shutil.move(str(tmp_dir), str(base_dir))
+
+            self.indexes[column] = {"index": "invtext", "filename": str(base_dir)}
+            put_json(self.filename, [self.relation, self.indexes])
+        finally:
+            try:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            except Exception:
+                pass
+        self.last_io = self.io_get()
+
+    def drop_inverted_text_index(self, column: str):
+        if column not in self.relation or column not in self.indexes:
+            return
+
+        meta = self.indexes.get(column, {})
+        if meta.get("index") != "invtext":
+            return
+
+        folder = meta.get("filename") or meta.get("folder")
+        if folder:
+            shutil.rmtree(folder, ignore_errors=True)
+        self.indexes.pop(column, None)
+        put_json(self.filename, [self.relation, self.indexes])
+        self.last_io = self.io_get()
+
+    def text_search(self, column: str, consulta: str, k: int):
+        if column not in self.relation or column not in self.indexes:
+            return []
+        if not isinstance(consulta, str) or not consulta.strip():
+            return []
+        kind = (self.indexes.get(column, {}).get("index") or "").lower()
+        if kind != "invtext":
+            return []
+        res = self.knn({"op": "knn", "field": column, "query_text": consulta, "k": k, "kind": "invtext"})
+        return res or []
+
     # ----------------------------------- execute ------------------------------------ #
 
     def execute(self, params: dict):
@@ -1335,6 +1454,15 @@ class File:
             if DEBUG_IDX: print(f"[import_csv] closed cached rtrees after {total} records")
             self.last_io = self.io_get()
             return {"count": total}
-        
+
         elif params["op"] == "get_all":
             return self.get_all()
+
+        elif params["op"] == "create_inverted_text":
+            return self.create_inverted_text_index(params["column"])
+
+        elif params["op"] == "drop_inverted_text":
+            return self.drop_inverted_text_index(params["column"])
+
+        elif params["op"] == "text_search":
+            return self.text_search(params["column"], params.get("query_text") or params.get("consulta", ""), int(params.get("k") or 0))

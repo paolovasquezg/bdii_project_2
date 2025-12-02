@@ -52,12 +52,12 @@ class BoVWFile:
     # ------------------------------- helpers ---------------------------------------- #
 
     def _feature_vector(self, path: str) -> np.ndarray:
-        """Histograma de intensidades (32 bins) normalizado."""
+        """Histograma de intensidades (256 bins) normalizado."""
         img = Image.open(path).convert("L")
         self.read_count += 1  # contar lectura de imagen
         img = img.resize((64, 64))
         arr = np.asarray(img, dtype=np.float32)
-        hist, _ = np.histogram(arr, bins=32, range=(0, 255))
+        hist, _ = np.histogram(arr, bins=256, range=(0, 255))
         vec = hist.astype(np.float32)
         total = float(vec.sum())
         if total > 0:
@@ -190,7 +190,18 @@ class BoVWFile:
                 tfidf = tfidf * idf_eff
             self.tfidf_vectors[doc_id] = tfidf
             any_w = False
-            for idx, w in enumerate(tfidf):
+            # sparsificar para el índice invertido: top-k bins (más selectivo)
+            k = 4
+            tfidf_sparse = np.array(tfidf, copy=True)
+            if k < tfidf_sparse.shape[0] and np.count_nonzero(tfidf_sparse) > k:
+                top_idx = np.argpartition(tfidf_sparse, -k)[-k:]
+                mask = np.zeros_like(tfidf_sparse)
+                mask[top_idx] = 1.0
+                tfidf_sparse = tfidf_sparse * mask
+            else:
+                tfidf_sparse = tfidf
+
+            for idx, w in enumerate(tfidf_sparse):
                 if w <= 0:
                     continue
                 any_w = True
@@ -247,13 +258,8 @@ class BoVWFile:
 
     def _knn_dense(self, q_vec: np.ndarray, norm_q: float) -> List[Tuple[Union[int, str], float]]:
         scores_list: List[Tuple[Union[int, str], float]] = []
-        idf_eff = self.idf
-        if idf_eff is not None and np.allclose(idf_eff, 0):
-            idf_eff = np.ones_like(idf_eff)
         for doc_id, vec in self.vectors.items():
-            dv = vec
-            if idf_eff is not None and idf_eff.shape[0] == dv.shape[0]:
-                dv = dv * idf_eff
+            dv = vec  # camino secuencial sin optimización (ni idf ni cache)
             norm_d = float(np.linalg.norm(dv))
             if norm_d == 0.0:
                 dv = vec

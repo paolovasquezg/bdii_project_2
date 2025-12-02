@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react"
 import { Database, Play, Table2, CheckCircle, AlertCircle, ChevronRight, ChevronDown, X, Upload, Wand2 } from "lucide-react"
-import { Button } from "../src/components/button.tsx"
-import { Card } from "../src/components/card.tsx"
-import { ScrollArea } from "../src/components/scroll.tsx"
-import { loadTables, execQuery, uploadMedia, createTableFromCsv } from "./data/data"
+import { Button } from "./components/button"
+import { Card } from "./components/card"
+import { ScrollArea } from "./components/scroll"
+import { loadTables, execQuery, uploadMedia, createTableFromCsv, API_BASE } from "./data/data"
 
 const SQLQueryInterface = () => {
   const apiBase = (import.meta.env.VITE_API_URL as string | undefined) || "http://127.0.0.1:8000"
@@ -32,6 +32,16 @@ const SQLQueryInterface = () => {
   const [csvErr, setCsvErr] = useState<string>("")
   const [csvProcessing, setCsvProcessing] = useState(false)
   const [csvCount, setCsvCount] = useState<number | null>(null)
+
+  const previewUpload = () => {
+    if (!uploadPath) return
+    const ext = uploadPath.toLowerCase().split(".").pop() || ""
+    const isAudio = ["mp3", "wav", "flac", "ogg", "m4a"].includes(ext)
+    const isImage = ["jpg", "jpeg", "png", "gif", "webp", "bmp"].includes(ext)
+    setViewerSrc(uploadPath)
+    setViewerKind(isAudio ? "audio" : isImage ? "image" : "image")
+    setViewerTitle(uploadPath.split("/").pop() || "Archivo subido")
+  }
 
   const executeQuery = async () => {
     setIsExecuting(true)
@@ -357,6 +367,16 @@ const SQLQueryInterface = () => {
                     {uploadError || uploadMsg}
                   </p>
                 )}
+                {uploadPath && (
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs font-mono text-foreground truncate max-w-xs" title={uploadPath}>
+                      {uploadPath}
+                    </span>
+                    <Button size="xs" variant="secondary" onClick={previewUpload}>
+                      Ver upload
+                    </Button>
+                  </div>
+                )}
                 <div className="mb-3 flex flex-wrap gap-2">
                   <Button size="sm" variant="outline" onClick={() => insertTemplate("img")}>
                     <Wand2 className="h-4 w-4 mr-1" />
@@ -443,17 +463,17 @@ const SQLQueryInterface = () => {
                               const pAud = (r as any).file_path as string | undefined
                               const pText = (r as any).content as string | undefined
                               if (pImg) {
-                                  setViewerSrc(pImg)
-                                  setViewerKind("image")
-                                  setViewerTitle((r as any).title || (r as any).file_name || "Imagen")
+                                setViewerSrc(pImg)            // deja el path crudo; el visor lo resolverá con /file
+                                setViewerKind("image")
+                                setViewerTitle((r as any).title || (r as any).file_name || "Imagen")
                               } else if (pAud) {
-                                  setViewerSrc(pAud)
-                                  setViewerKind("audio")
-                                  setViewerTitle((r as any).file_name || "Audio")
+                                setViewerSrc(pAud)
+                                setViewerKind("audio")
+                                setViewerTitle((r as any).file_name || "Audio")
                               } else if (pText) {
-                                  setViewerSrc(pText)
-                                  setViewerKind("text")
-                                  setViewerTitle((r as any).title || (r as any).id || "Texto")
+                                setViewerSrc(pText)
+                                setViewerKind("text")
+                                setViewerTitle((r as any).title || (r as any).id || "Texto")
                               }
                             }}
                             title="Click para ver imagen (si hay image_path)"

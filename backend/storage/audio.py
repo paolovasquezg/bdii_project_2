@@ -55,11 +55,13 @@ class AudioRecord:
     def from_dict(data: Dict) -> 'AudioRecord':
         """Crea desde diccionario"""
         raw_vec = data['tfidf_vector']
+        if raw_vec in ("", None):
+            raw_vec = []
         if isinstance(raw_vec, str):
             try:
                 raw_vec = json.loads(raw_vec)
             except Exception:
-                pass
+                raw_vec = []
         return AudioRecord(
             audio_id=data['audio_id'],
             file_name=data['file_name'],
@@ -199,6 +201,8 @@ class AudioStorage:
             record_dict = rec
             if isinstance(rec, tuple) and len(rec) >= 1:
                 record_dict = rec[0]
+            if not isinstance(record_dict, dict) and hasattr(record_dict, "fields"):
+                record_dict = getattr(record_dict, "fields", record_dict)
             if not isinstance(record_dict, dict):
                 continue
             record_dict['deleted'] = False
@@ -228,6 +232,8 @@ class AudioStorage:
             # Recalcular vector para asegurar consistencia (nombre/archivo vs ruta)
             try:
                 dim = len(record.tfidf_vector) if hasattr(record.tfidf_vector, "__len__") else 32
+                if not dim or dim <= 0:
+                    dim = 32
                 vec = self.vector_from_path(record.file_path, dim=dim)
                 record.tfidf_vector = vec
             except Exception:
@@ -288,7 +294,13 @@ class AudioStorage:
         # Cargar caché desde Sequential File
         record_count = 0
         for record in self.scan():
-            self._vector_cache[record.audio_id] = record.tfidf_vector
+            vec = record.tfidf_vector
+            if not hasattr(vec, "__len__") or len(vec) == 0:
+                try:
+                    vec = self.vector_from_path(record.file_path, dim=32)
+                except Exception:
+                    vec = record.tfidf_vector
+            self._vector_cache[record.audio_id] = vec
             self._metadata_cache[record.audio_id] = {
                 'file_name': record.file_name,
                 'file_path': record.file_path

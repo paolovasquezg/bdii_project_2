@@ -632,10 +632,17 @@ class Executor:
                             # si hay similitud, inclúyela aunque no esté en columns
                             cols_knn = cols
                             if rows and cols is not None:
+                                # agrega el campo consultado (ej. image_path) y similarity
+                                if where["ident"] not in cols:
+                                    cols_knn = list(cols) + [where["ident"]]
                                 if any(isinstance(r, dict) and "similarity" in r for r in rows):
-                                    cols_knn = list(cols) + (["similarity"] if "similarity" not in cols else [])
-                            # proyección manual para no perder similarity
+                                    if "similarity" not in cols_knn:
+                                        cols_knn = list(cols_knn) + ["similarity"]
+                            if rows and cols is None:
+                                # sin proyección explícita, mantenemos rows tal cual
+                                cols_knn = None
                             if cols_knn:
+                                # proyección manual para no perder similarity ni el campo base
                                 norm = []
                                 for r in rows:
                                     if isinstance(r, tuple) and len(r) >= 1:
@@ -667,6 +674,10 @@ class Executor:
                             if isinstance(rows, list) and any(isinstance(r, dict) and "similarity" in r for r in rows):
                                 if "similarity" not in cols:
                                     cols = list(cols) + ["similarity"]
+                            # incluye también el campo base de la consulta knn si es que está en el payload
+                            knn_field = payload.get("field")
+                            if knn_field and knn_field not in cols:
+                                cols = list(cols) + [knn_field]
                             norm = []
                             for r in rows:
                                 if isinstance(r, tuple) and len(r) >= 1:

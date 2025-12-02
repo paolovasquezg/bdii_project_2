@@ -1,4 +1,4 @@
-import SQLQueryInterface from './sql.tsx'
+import SQLQueryInterface from './sql'
 
 function App() {
   return (

@@ -28,6 +28,7 @@ UPLOAD_DIR = Path(__file__).resolve().parent / "runtime" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 CSV_UPLOAD_DIR = UPLOAD_DIR / "csv"
 CSV_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+DATA_DIR = Path(__file__).resolve().parent / "data"
 
 @app.get("/")
 def root():
@@ -90,10 +91,54 @@ def get_file(path: str):
     Sirve un archivo local (imagen/audio) en modo lectura.
     Nota: asegúrate de pasar rutas válidas dentro del contenedor/host.
     """
-    p = Path(path).resolve()
-    if not p.exists() or not p.is_file():
+    raw = Path(path).expanduser()
+    backend_root = Path(__file__).resolve().parent
+    data_root = backend_root / "data"
+    images_dir = data_root / "images"
+    audio_dir = data_root / "audio"
+    text_dir = data_root / "text"
+    candidates = []
+
+    # 1) tal cual
+    candidates.append(raw)
+    # 1b) si viene como /app/backend/..., remap al host (cuando el path viene desde contenedor)
+    try:
+        container_root = Path("/app/backend")
+        if raw.is_absolute() and str(raw).startswith(str(container_root)):
+            rel = raw.relative_to(container_root)
+            candidates.append((backend_root / rel).resolve())
+    except Exception:
+        pass
+    # 1c) si es ruta absoluta del host que contiene "/backend/", recorta desde ese punto
+    try:
+        raw_str = str(raw)
+        marker = "/backend/"
+        if raw.is_absolute() and marker in raw_str:
+            rel = raw_str.split(marker, 1)[1]
+            candidates.append((backend_root / rel).resolve())
+    except Exception:
+        pass
+    # 2) relativo al backend/data (dataset)
+    if not raw.is_absolute():
+        candidates.append((data_root / raw).resolve())
+    # 3) por nombre dentro de data/images, data/audio, data/text
+    candidates.append((images_dir / raw.name).resolve())
+    candidates.append((audio_dir / raw.name).resolve())
+    candidates.append((text_dir / raw.name).resolve())
+
+    found = None
+    for cand in candidates:
+        try:
+            if cand.exists() and cand.is_file():
+                found = cand
+                break
+        except Exception:
+            continue
+
+    if not found:
         raise HTTPException(status_code=404, detail="Archivo no encontrado")
-    return FileResponse(p)
+
+    return FileResponse(found)
 
 
 @app.post("/upload-media")
